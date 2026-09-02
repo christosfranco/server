@@ -2352,6 +2352,7 @@ class Player : public Unit
 
         // Learn the player's default spells
         void learnDefaultSpells();
+        void LearnClassLevelSpells();
 
         // Learn quest-rewarded spells
         void learnQuestRewardedSpells();

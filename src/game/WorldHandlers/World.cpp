@@ -712,6 +712,9 @@ void World::SetInitialWorldSettings()
 
     sLog.outString("Loading Player Create Info & Level Stats...");
     sObjectMgr.LoadPlayerInfo();
+
+    sLog.outString("Loading Class Level Spells...");
+    sObjectMgr.LoadClassLevelSpells();
     sLog.outString(">>> Player Create Info & Level Stats loaded");
     sLog.outString();
 

@@ -849,6 +849,17 @@ class ObjectMgr
         void LoadPageTexts();
 
         void LoadPlayerInfo();
+
+        /// Spells an Ascension class is granted on reaching a level, ordered by
+        /// level. Stock 3.3.5a has no such table: a class learns from trainers,
+        /// and there are no trainers for these classes. See
+        /// ObjectMgr::LoadClassLevelSpells.
+        typedef std::multimap<uint32 /*level*/, uint32 /*spell*/> ClassLevelSpellMap;
+        void LoadClassLevelSpells();
+        ClassLevelSpellMap const* GetClassLevelSpells(uint8 class_) const
+        {
+            return class_ < MAX_CLASSES ? &m_classLevelSpells[class_] : NULL;
+        }
         void LoadPetLevelInfo();
         void LoadExplorationBaseXP();
         void LoadPetNames();
@@ -1534,6 +1545,7 @@ class ObjectMgr
         PetLevelInfoMap petInfo;                            // [creature_id][level]
 
         PlayerClassInfo playerClassInfo[MAX_CLASSES];
+        ClassLevelSpellMap m_classLevelSpells[MAX_CLASSES];
 
         void BuildPlayerLevelInfo(uint8 race, uint8 class_, uint8 level, PlayerLevelInfo* plinfo) const;
         PlayerInfo playerInfo[MAX_RACES][MAX_CLASSES];

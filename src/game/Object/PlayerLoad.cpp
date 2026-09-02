@@ -782,6 +782,7 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
     // after spell and quest load
     InitTalentForLevel();
     learnDefaultSpells();
+    LearnClassLevelSpells();             // catch up anything added since last login
 
     // must be before inventory (some items required reputation check)
     m_reputationMgr.LoadFromDB(holder->GetResult(PLAYER_LOGIN_QUERY_LOADREPUTATION));

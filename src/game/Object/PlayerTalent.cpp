@@ -165,23 +165,41 @@ void Player::LearnTalent(uint32 talentId, uint32 talentRank)
         }
     }
 
-    // Find out how many points we have in this field
+    // Find out how many points we have in this field.
+    //
+    // Counted UNCONDITIONALLY, where stock only bothered for tiers above zero:
+    // the per-tree cap below needs the number even in tier 0, and the count is
+    // over the player's own talents, so it is not worth a branch to skip.
     uint32 spentPoints = 0;
 
     uint32 tTab = talentInfo->TabID;
-    if (talentInfo->TierID > 0)
+    for (PlayerTalentMap::const_iterator iter = m_talents[m_activeSpec].begin(); iter != m_talents[m_activeSpec].end(); ++iter)
     {
-        for (PlayerTalentMap::const_iterator iter = m_talents[m_activeSpec].begin(); iter != m_talents[m_activeSpec].end(); ++iter)
+        if (iter->second.state != PLAYERSPELL_REMOVED && iter->second.talentEntry
+            && iter->second.talentEntry->TabID == tTab)
         {
-            if (iter->second.state != PLAYERSPELL_REMOVED && iter->second.talentEntry->TabID == tTab)
-            {
-                spentPoints += iter->second.currentRank + 1;
-            }
+            spentPoints += iter->second.currentRank + 1;
         }
     }
 
     // not have required min points spent in talent tree
-    if (spentPoints < (talentInfo->TierID * MAX_TALENT_RANK))
+    //
+    // An added class is gated at TALENT_POINTS_PER_TIER_ADDED per tier instead
+    // of MAX_TALENT_RANK; SharedDefines.h says why, and the client is given the
+    // same rule so the frame greys out exactly what this refuses.
+    //
+    // [C] There was a per-tree CAP here as well -- an added class could not
+    // spend more than TALENT_POINTS_PER_TREE in one tab -- added back when the
+    // pool was a fixed per-tree grant. Its arithmetic was self-defeating: tier 1
+    // needed five points spent in the tab and the cap refused the sixth, so no
+    // character of any added class could ever buy a talent below the first row.
+    // The pool grows with level now (Player::CalculateTalentsPoints) and it is
+    // one pool, spendable anywhere, which is what stock talents have always
+    // been. The tier gate is the only depth rule.
+    const uint32 pointsPerTier = getClass() > MAX_STOCK_CLASS
+                                 ? TALENT_POINTS_PER_TIER_ADDED
+                                 : MAX_TALENT_RANK;
+    if (spentPoints < (talentInfo->TierID * pointsPerTier))
     {
         return;
     }
@@ -444,8 +462,11 @@ void Player::BuildPlayerTalentsInfoData(WorldPacket* data)
                         continue;
                     }
 
-                    // skip another tab talents
-                    if (talent.talentEntry->TabID != talentTabId)
+                    // skip another tab talents. The entry is checked because a
+                    // talent whose DBC row has gone leaves a NULL here, and this
+                    // packet is built on every talent change -- so a stale row
+                    // in character_talent would crash the world, not the player.
+                    if (!talent.talentEntry || talent.talentEntry->TabID != talentTabId)
                     {
                         continue;
                     }
@@ -789,6 +810,10 @@ void Player::ActivateSpec(uint8 specNum)
             continue;
         }
 
+        if (!talent.talentEntry)
+        {
+            continue;
+        }
         uint32 talentSpellId = talent.talentEntry->SpellRank[talent.currentRank];
 
         // learn talent spells if they not in new spec (old spec copy)

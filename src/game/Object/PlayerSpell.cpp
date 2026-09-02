@@ -392,11 +392,27 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
         }
         else
         {
-            PlayerTalent talent;
-            talent.currentRank = talentPos->rank;
-            talent.talentEntry = sTalentStore.LookupEntry(talentPos->talent_id);
-            talent.state       = IsInWorld() ? PLAYERSPELL_NEW : PLAYERSPELL_UNCHANGED;
-            m_talents[m_activeSpec][talentPos->talent_id] = talent;
+            TalentEntry const* talentEntry = sTalentStore.LookupEntry(talentPos->talent_id);
+            if (!talentEntry)
+            {
+                // The spell->talent map said this spell belongs to a talent that
+                // Talent.dbc does not have. Recording it would put a NULL
+                // talentEntry in m_talents, and every reader of that map --
+                // LearnTalent, BuildPlayerTalentsInfoData, resetTalents --
+                // dereferences it without asking. One missing row would be a
+                // segfault on the next talent packet.
+                sLog.outError("Player::addSpell: spell %u maps to talent %u, which is "
+                              "not in Talent.dbc; not recording it as a talent.",
+                              spell_id, talentPos->talent_id);
+            }
+            else
+            {
+                PlayerTalent talent;
+                talent.currentRank = talentPos->rank;
+                talent.talentEntry = talentEntry;
+                talent.state       = IsInWorld() ? PLAYERSPELL_NEW : PLAYERSPELL_UNCHANGED;
+                m_talents[m_activeSpec][talentPos->talent_id] = talent;
+            }
         }
 
         // update used talent points count

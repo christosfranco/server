@@ -173,6 +173,10 @@ namespace proto
         return true;
     }
 
+    /// Wire width of the SRP6 session key. The value's own byte count is
+    /// not the same thing and must never be used in its place.
+    static const int SRP_SESSION_KEY_WIDTH = 40;
+
     bool ClientConnection::HandleAuthSession(WorldPacket& packet)
     {
         AuthRequest request;
@@ -231,7 +235,12 @@ namespace proto
         sha.UpdateData(zero, 4);
         sha.UpdateData(reinterpret_cast<const uint8*>(&clientSeed), 4);
         sha.UpdateData(reinterpret_cast<const uint8*>(&serverSeed), 4);
-        sha.UpdateBigNumbers(&sessionKey, NULL);
+        // FORTY BYTES, not sessionKey.GetNumBytes(). The client hashes the
+        // full-width key; a BigNumber whose top byte is zero is 39 bytes wide
+        // and produces a digest that cannot match, refusing about one login in
+        // 256 as a bad proof. See the note in AuthCrypt::Init.
+        sha.UpdateData(sessionKey.AsByteArray(SRP_SESSION_KEY_WIDTH),
+                       SRP_SESSION_KEY_WIDTH);
         sha.Finalize();
 
         if (std::memcmp(sha.GetDigest(), request.digest, AUTH_DIGEST_SIZE) != 0)

@@ -110,6 +110,7 @@ void AchievementGlobalMgr::LoadAchievementCriteriaList()
     }
 
     uint32 count = 0;
+    uint32 unknownTypes = 0;
     BarGoLink bar(sAchievementCriteriaStore.GetNumRows());
     for (uint32 entryId = 0; entryId < sAchievementCriteriaStore.GetNumRows(); ++entryId)
     {
@@ -121,7 +122,22 @@ void AchievementGlobalMgr::LoadAchievementCriteriaList()
             continue;
         }
 
-        MANGOS_ASSERT(criteria->Type < ACHIEVEMENT_CRITERIA_TYPE_TOTAL && "Not updated ACHIEVEMENT_CRITERIA_TYPE_TOTAL?");
+        // A criteria type this build has no enum for indexes
+        // m_AchievementCriteriasByType out of bounds, so it must be dropped
+        // either way. It used to be an assertion, on the reasoning that a
+        // type outside the range means ACHIEVEMENT_CRITERIA_TYPE_TOTAL was not
+        // updated for a new client -- true for Blizzard's DBCs, where the only
+        // way to see one is a version mismatch.
+        //
+        // A third-party Achievement_Criteria.dbc is the other way to see one,
+        // and it is not a build error: Ascension's carries criteria for its own
+        // systems. Skipping them costs those achievements and nothing else,
+        // where aborting cost the whole server.
+        if (criteria->Type >= ACHIEVEMENT_CRITERIA_TYPE_TOTAL)
+        {
+            ++unknownTypes;
+            continue;
+        }
 
         // check if referredAchievement exists!
         AchievementEntry const* achiev = sAchievementStore.LookupEntry(criteria->Achievement_ID);
@@ -135,6 +151,13 @@ void AchievementGlobalMgr::LoadAchievementCriteriaList()
         m_AchievementCriteriasByType[criteria->Type].push_back(criteria);
         m_AchievementCriteriaListByAchievement[criteria->Achievement_ID].push_back(criteria);
         ++count;
+    }
+
+    if (unknownTypes)
+    {
+        sLog.outErrorDb(">> %u achievement criteria skipped: criteria type outside this build's "
+                        "ACHIEVEMENT_CRITERIA_TYPE_TOTAL. Expected with a third-party DBC set.",
+                        unknownTypes);
     }
 
     sLog.outString();

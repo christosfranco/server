@@ -47,13 +47,31 @@ typedef std::unordered_map<uint32, uint32> AbilitySpellPrevMap;
  * @param prev_id The previous spell id in the chain.
  * @param deep The remaining recursion depth guard.
  */
+/// Rank links this load could not make sense of. These used to be assertions,
+/// which is right for Blizzard's own DBCs -- where a spell reaching two
+/// different previous ranks, or a rank cycle, really is impossible -- and wrong
+/// for anyone else's. A third-party Spell.dbc (Ascension's carries 209,509
+/// spells against the stock 49,839, with 40,999 SkillLineAbility rows) contains
+/// both, and the server aborted in SpellMgr::LoadSpellChains before it ever
+/// opened a socket.
+///
+/// Bad data is now dropped and counted, not fatal: the affected spells simply
+/// get no rank chain, which costs rank-aware behaviour for those spells and
+/// nothing else. The count is reported at the end of the load so it cannot pass
+/// silently.
+static uint32 s_conflictingChainLinks = 0;
+static uint32 s_cyclicChainLinks = 0;
+
 static void LoadSpellChains_AbilityHelper(SpellChainMap& chainMap, AbilitySpellPrevMap const& prevRanks, uint32 spell_id, uint32 prev_id, uint32 deep = 30)
 {
     // spell already listed in chains store
     SpellChainMap::const_iterator chain_itr = chainMap.find(spell_id);
     if (chain_itr != chainMap.end())
     {
-        MANGOS_ASSERT(chain_itr->second.prev == prev_id && "LoadSpellChains_AbilityHelper: Conflicting data in talents or spell abilities dbc");
+        if (chain_itr->second.prev != prev_id)
+        {
+            ++s_conflictingChainLinks;
+        }
         return;
     }
 
@@ -92,7 +110,9 @@ static void LoadSpellChains_AbilityHelper(SpellChainMap& chainMap, AbilitySpellP
 
     if (deep == 0)
     {
-        MANGOS_ASSERT(false && "LoadSpellChains_AbilityHelper: Infinity cycle in spell ability data");
+        // A rank chain deeper than the guard is a cycle in practice. Leave the
+        // spell unchained rather than recursing until the stack runs out.
+        ++s_cyclicChainLinks;
         return;
     }
 
@@ -207,7 +227,10 @@ void SpellMgr::LoadSpellChains()
             SpellChainMap::const_iterator chain_itr = mSpellChains.find(forward_id);
             if (chain_itr != mSpellChains.end())
             {
-                MANGOS_ASSERT(chain_itr->second.prev == spell_id && "Conflicting data in talents or spell abilities dbc");
+                if (chain_itr->second.prev != spell_id)
+                {
+                    ++s_conflictingChainLinks;
+                }
                 continue;
             }
 
@@ -215,7 +238,10 @@ void SpellMgr::LoadSpellChains()
             AbilitySpellPrevMap::const_iterator prev_itr = prevRanks.find(forward_id);
             if (prev_itr != prevRanks.end())
             {
-                MANGOS_ASSERT(prev_itr->second == spell_id && "Conflicting data in talents or spell abilities dbc");
+                if (prev_itr->second != spell_id)
+                {
+                    ++s_conflictingChainLinks;
+                }
                 continue;
             }
 
@@ -507,6 +533,12 @@ void SpellMgr::LoadSpellChains()
     }
 
     sLog.outString(">> Loaded %u spell chain records (%u from DBC data with %u req field updates, and %u loaded from table)", dbc_count + new_count, dbc_count, req_count, new_count);
+    if (s_conflictingChainLinks || s_cyclicChainLinks)
+    {
+        sLog.outErrorDb(">> %u spell rank link(s) dropped as self-contradictory and %u as cyclic. "
+                        "Expected with a third-party Spell.dbc; those spells have no rank chain.",
+                        s_conflictingChainLinks, s_cyclicChainLinks);
+    }
     sLog.outString();
 }
 

@@ -2619,12 +2619,24 @@ typedef std::set<uint32> PetFamilySpellsSet;
 typedef std::map<uint32, PetFamilySpellsSet > PetFamilySpellsStore;
 
 // Structures not used for casting to loaded DBC data and not required then packing
+/**
+ * Where a spell sits in the talent trees: which Talent.dbc row grants it, and
+ * at which rank.
+ *
+ * talent_id IS A uint32, not a uint16. Talent.dbc's id column is 32 bits and
+ * stock 3.3.5a happens to stay under 65535, so the narrower field was free --
+ * until a DBC arrives that does not. Ascension's Talent.dbc runs to id 112369,
+ * and 112286 stored in a uint16 comes back as 46750: a real id, belonging to a
+ * different talent, which the server then cannot find or finds as the wrong
+ * one. The failure is silent and looks like the talent simply refusing to be
+ * learned.
+ */
 struct TalentSpellPos
 {
     TalentSpellPos() : talent_id(0), rank(0) {}
-    TalentSpellPos(uint16 _talent_id, uint8 _rank) : talent_id(_talent_id), rank(_rank) {}
+    TalentSpellPos(uint32 _talent_id, uint8 _rank) : talent_id(_talent_id), rank(_rank) {}
 
-    uint16 talent_id;
+    uint32 talent_id;
     uint8  rank;
 };
 

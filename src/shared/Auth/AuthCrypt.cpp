@@ -40,17 +40,35 @@ AuthCrypt::~AuthCrypt()
 {
 }
 
+namespace
+{
+    /// The session key is FORTY BYTES WIDE on the wire, always.
+    ///
+    /// realmd builds it with K.SetBinary(vK, 40) and the client holds exactly
+    /// those 40 bytes, but a BigNumber only remembers the value -- so a key
+    /// whose top byte is zero reports GetNumBytes() == 39, and hashing it at
+    /// its "natural" width keys this cipher off 39 bytes while the client keys
+    /// off 40. That is one login in 256, and it presents as an unexplained
+    /// disconnect immediately after CMSG_AUTH_SESSION rather than as anything
+    /// resembling a key problem. Hash the protocol's width, never the value's.
+    const int SESSION_KEY_WIDTH = 40;
+}
+
 void AuthCrypt::Init(BigNumber* K)
 {
     uint8 ServerEncryptionKey[SEED_KEY_SIZE] = { 0xCC, 0x98, 0xAE, 0x04, 0xE8, 0x97, 0xEA, 0xCA, 0x12, 0xDD, 0xC0, 0x93, 0x42, 0x91, 0x53, 0x57 };
 
     HMACSHA1 serverEncryptHmac(SEED_KEY_SIZE, (uint8*)ServerEncryptionKey);
-    uint8* encryptHash = serverEncryptHmac.ComputeHash(K);
+    serverEncryptHmac.UpdateData(K->AsByteArray(SESSION_KEY_WIDTH), SESSION_KEY_WIDTH);
+    serverEncryptHmac.Finalize();
+    uint8* encryptHash = serverEncryptHmac.GetDigest();
 
     uint8 ServerDecryptionKey[SEED_KEY_SIZE] = { 0xC2, 0xB3, 0x72, 0x3C, 0xC6, 0xAE, 0xD9, 0xB5, 0x34, 0x3C, 0x53, 0xEE, 0x2F, 0x43, 0x67, 0xCE };
 
     HMACSHA1 clientDecryptHmac(SEED_KEY_SIZE, (uint8*)ServerDecryptionKey);
-    uint8* decryptHash = clientDecryptHmac.ComputeHash(K);
+    clientDecryptHmac.UpdateData(K->AsByteArray(SESSION_KEY_WIDTH), SESSION_KEY_WIDTH);
+    clientDecryptHmac.Finalize();
+    uint8* decryptHash = clientDecryptHmac.GetDigest();
 
     // SARC4 _serverDecrypt(encryptHash);
     _clientDecrypt.Init(decryptHash);

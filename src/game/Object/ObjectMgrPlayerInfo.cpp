@@ -178,6 +178,75 @@ PetLevelInfo const* ObjectMgr::GetPetLevelInfo(uint32 creature_id, uint32 level)
 /**
  * @brief Loads player creation, starting inventory, spells, actions, and XP data.
  */
+/**
+ * @brief Loads the spells an added class gains on reaching a level.
+ *
+ * WHY THIS TABLE EXISTS. A stock class learns most of its abilities from a
+ * trainer, and `playercreateinfo_spell` covers only what it starts with. There
+ * are no trainers for Ascension's classes, and their own data carries a
+ * RequiredLevel per ability running to level 51 -- so without this a Sun Cleric
+ * would learn everything it will ever know at creation and nothing afterwards.
+ *
+ * Rows are (class, level, spell); Player::LearnClassLevelSpells grants
+ * everything at or below the player's level that is not already known, so it is
+ * also the catch-up path for a character that levelled before a row was added.
+ */
+void ObjectMgr::LoadClassLevelSpells()
+{
+    for (uint32 i = 0; i < MAX_CLASSES; ++i)
+    {
+        m_classLevelSpells[i].clear();
+    }
+
+    QueryResult* result = WorldDatabase.Query(
+        "SELECT `class`, `level`, `spell` FROM `player_class_levelspell` ORDER BY `level`");
+    if (!result)
+    {
+        sLog.outString();
+        sLog.outString(">> Loaded 0 class level spells. Table `player_class_levelspell` is empty.");
+        return;
+    }
+
+    uint32 count = 0, skipped = 0;
+    BarGoLink bar(result->GetRowCount());
+    do
+    {
+        Field* fields = result->Fetch();
+        uint32 class_ = fields[0].GetUInt32();
+        uint32 level  = fields[1].GetUInt32();
+        uint32 spell  = fields[2].GetUInt32();
+        bar.step();
+
+        if (class_ >= MAX_CLASSES || !sChrClassesStore.LookupEntry(class_))
+        {
+            sLog.outErrorDb("Wrong class %u in `player_class_levelspell`, ignoring.", class_);
+            ++skipped;
+            continue;
+        }
+        if (!level || level > sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+        {
+            sLog.outErrorDb("Wrong level %u for class %u in `player_class_levelspell`, ignoring.",
+                            level, class_);
+            ++skipped;
+            continue;
+        }
+        if (!sSpellStore.LookupEntry(spell))
+        {
+            // Ascension's own data references spells absent from its Spell.dbc;
+            // granting one would be an addSpell error per level-up, per player.
+            ++skipped;
+            continue;
+        }
+        m_classLevelSpells[class_].insert(ClassLevelSpellMap::value_type(level, spell));
+        ++count;
+    }
+    while (result->NextRow());
+    delete result;
+
+    sLog.outString();
+    sLog.outString(">> Loaded %u class level spells (%u skipped)", count, skipped);
+}
+
 void ObjectMgr::LoadPlayerInfo()
 {
     // Load playercreate

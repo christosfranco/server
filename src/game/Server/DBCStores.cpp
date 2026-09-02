@@ -727,12 +727,48 @@ void LoadDBCStores(const std::string& dataPath)
         sTaxiPathNodesByPath[i].resize(pathLength[i]);
     }
     // fill data (pointers to sTaxiPathNodeStore elements
+    std::vector<uint32> filledNodes;
+    filledNodes.resize(pathCount);
     for (uint32 i = 1; i < sTaxiPathNodeStore.GetNumRows(); ++i)
     {
         if (TaxiPathNodeEntry const* entry = sTaxiPathNodeStore.LookupEntry(i))
         {
             sTaxiPathNodesByPath[entry->PathID].set(entry->NodeIndex, entry);
+            ++filledNodes[entry->PathID];
         }
+    }
+
+    // A GAP IN A PATH'S NODE INDICES IS A NULL POINTER, NOT A MISSING NODE.
+    //
+    // The list was resized to the highest NodeIndex + 1 and only the indices
+    // actually present were set, so a hole keeps its default-constructed
+    // TaxiPathNodePtr -- whose i_ptr is NULL, and whose conversion to
+    // TaxiPathNodeEntry const& dereferences that pointer unconditionally. So
+    // Path::operator[] on a hole is a null dereference, and anything that walks
+    // every node dies on it. ScriptMgr::CollectPossibleEventIds walks every node
+    // during startup, which makes it a SIGSEGV before the server ever listens.
+    //
+    // Blizzard's TaxiPathNode.dbc has no gaps, which is why stock data never
+    // reaches this. A third-party one can: Ascension's has exactly one, and that
+    // single null pointer among 23,314 rows took the whole server down with a
+    // backtrace pointing at a function that had nothing to do with taxi paths.
+    //
+    // Drop the incomplete path. That flight path stops working, which is what an
+    // incomplete path means; every other path is untouched.
+    uint32 incompleteTaxiPaths = 0;
+    for (uint32 i = 1; i < sTaxiPathNodesByPath.size(); ++i)
+    {
+        if (filledNodes[i] != sTaxiPathNodesByPath[i].size())
+        {
+            sTaxiPathNodesByPath[i].clear();
+            ++incompleteTaxiPaths;
+        }
+    }
+    if (incompleteTaxiPaths)
+    {
+        sLog.outErrorDb("TaxiPathNode.dbc: %u taxi path(s) have gaps in their node indices and were dropped; "
+                        "a gap would otherwise be a null dereference on the first walk of the node list.",
+                        incompleteTaxiPaths);
     }
 
     // Initialize global taxinodes mask

@@ -104,7 +104,47 @@ void Player::resetSpells()
     }
 
     learnDefaultSpells();
+    LearnClassLevelSpells();
     learnQuestRewardedSpells();
+}
+
+/**
+ * @brief Grants the class spells the player's level entitles it to.
+ *
+ * Everything at or below the current level that is not already known -- so it is
+ * both the level-up grant and the catch-up for a character that levelled before
+ * a row existed. Ordered by level, so the walk stops as soon as it passes.
+ */
+void Player::LearnClassLevelSpells()
+{
+    ObjectMgr::ClassLevelSpellMap const* spells = sObjectMgr.GetClassLevelSpells(getClass());
+    if (!spells || spells->empty())
+    {
+        return;
+    }
+
+    const uint32 level = getLevel();
+    for (ObjectMgr::ClassLevelSpellMap::const_iterator itr = spells->begin();
+         itr != spells->end(); ++itr)
+    {
+        if (itr->first > level)
+        {
+            break;
+        }
+        if (HasSpell(itr->second))
+        {
+            continue;
+        }
+        if (!IsInWorld())
+        {
+            // Sent in the initial spell list when the player is added to a map.
+            addSpell(itr->second, true, true, true, false);
+        }
+        else
+        {
+            learnSpell(itr->second, false);
+        }
+    }
 }
 
 /**

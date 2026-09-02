@@ -836,6 +836,7 @@ bool Player::Create(uint32 guidlow, const std::string& name, uint8 race, uint8 c
 
     // original spells
     learnDefaultSpells();
+    LearnClassLevelSpells();
 
     // Initialize action bar with default actions
     for (PlayerCreateInfoActions::const_iterator action_itr = info->action.begin(); action_itr != info->action.end(); ++action_itr)
@@ -2593,6 +2594,7 @@ void Player::SetLevel(uint32 level)
     SetCreateMana(classInfo.basemana);
 
     InitTalentForLevel();
+    LearnClassLevelSpells();          // abilities this level entitles the class to
     InitTaxiNodesForLevel();
     InitGlyphsForLevel();
 
@@ -2671,8 +2673,17 @@ void Player::GiveLevel(uint32 level)
 void Player::UpdateFreeTalentPoints(bool resetIfNeed)
 {
     uint32 level = getLevel();
+
+    // The level-10 gate is the stock progression's, not a rule about talents:
+    // a stock class has (level - 9) points, which is zero or less below ten, so
+    // the branch is just an early out. An Ascension class has a FIXED pool from
+    // level one (Player::CalculateTalentsPoints), and running it through this
+    // gate zeroed the pool before the calculation was ever reached -- which is
+    // why LearnTalent returned silently on `CurTalentPoints == 0`.
+    const bool levelGated = (getClass() <= MAX_STOCK_CLASS);
+
     // talents base at level diff ( talents = level - 9 but some can be used already)
-    if (level < 10)
+    if (levelGated && level < 10)
     {
         // Remove all talent points
         if (m_usedTalentCount > 0)                          // Free any used talents
@@ -5160,6 +5171,39 @@ Item* Player::ConvertItem(Item* item, uint32 newItemId)
  */
 uint32 Player::CalculateTalentsPoints() const
 {
+    // Ascension's added classes get a starting grant AND a point per level,
+    // rather than the stock "one point per level past nine".
+    //
+    // The grant is TALENT_POINTS_PER_TREE per tree the class actually has, read
+    // from the DBC rather than assumed, so adding a fourth tree to a class
+    // changes this number without touching this code. It exists because these
+    // trees are authored rather than grown: a class that cannot spend a point
+    // until level ten is not testable at level one.
+    //
+    // [C] The grant used to be the WHOLE pool, fixed for all eighty levels. A
+    // tree is eleven tiers deep and tier N wants N * TALENT_POINTS_PER_TIER_ADDED
+    // points already in that tab, so a pool of fifteen that never grew put the
+    // bottom of every tree permanently out of reach -- levelling an added class
+    // changed nothing about its talents at all. The per-level point is what
+    // makes depth mean progression.
+    if (getClass() > MAX_STOCK_CLASS)
+    {
+        uint32 trees = 0;
+        if (uint32 const* tabs = GetTalentTabPages(getClass()))
+        {
+            for (uint32 i = 0; i < 3; ++i)
+            {
+                if (tabs[i])
+                {
+                    ++trees;
+                }
+            }
+        }
+        return uint32((trees * TALENT_POINTS_PER_TREE + (getLevel() - 1))
+                      * sWorld.getConfig(CONFIG_FLOAT_RATE_TALENT))
+               + m_questRewardTalentCount;
+    }
+
     uint32 base_level = getClass() == CLASS_DEATH_KNIGHT ? 55 : 9;
     uint32 base_talent = getLevel() <= base_level ? 0 : getLevel() - base_level;
 

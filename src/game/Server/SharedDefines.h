@@ -68,8 +68,20 @@ enum Races
     RACE_ICE_TROLL          = 21
 };
 
-// max+1 for player race
-#define MAX_RACES         12
+// max+1 for player race.
+//
+// 12 is the stock 3.3.5a count. Raised to 64 to carry Ascension's ChrRaces.dbc,
+// which keeps the stock layout (69 fields, 276-byte records -- the loader's
+// format string still matches) and simply adds rows: 42 races with ids running
+// to 63. Every array dimensioned MAX_RACES is a fixed initialiser list of the
+// original twelve; C++ zero-fills the rest, so the new ids read as zero rather
+// than running off the end.
+//
+// RACEMASK_ALL_PLAYABLE below is still the stock ten. A race mask is a uint32
+// and (1 << 62) is not representable in one, so it CANNOT be widened to cover
+// id 63 without changing the wire and DBC types it is compared against. Use a
+// stock-id race for anything that goes near a race mask.
+#define MAX_RACES         64
 
 #define RACEMASK_ALL_PLAYABLE \
     ((1<<(RACE_HUMAN-1))    |(1<<(RACE_ORC-1))      |(1<<(RACE_DWARF-1))   | \
@@ -102,14 +114,60 @@ enum Classes
     CLASS_DRUID         = 11,
 };
 
-// max+1 for player class
-#define MAX_CLASSES       12
+// max+1 for player class.
+//
+// 12 is the stock 3.3.5a count. Raised to 33 for Ascension's ChrClasses.dbc:
+// same 60 fields and 240-byte records as stock, 32 classes with ids 1..32.
+// Sun Cleric is 27. As with MAX_RACES, the arrays sized by this are initialiser
+// lists of the original twelve and the remainder is zero-filled -- a new class
+// therefore has no dodge/parry/crit constants and no achievement id, which is
+// harmless, and is not the same thing as reading out of bounds.
+//
+// A class mask stays representable: the highest id is 32 and (1u << 31) fits a
+// uint32, which is why CLASSMASK_* need no equivalent warning.
+#define MAX_CLASSES       33
 
-#define CLASSMASK_ALL_PLAYABLE \
-    ((1<<(CLASS_WARRIOR-1))|(1<<(CLASS_PALADIN-1))|(1<<(CLASS_HUNTER-1))| \
-     (1<<(CLASS_ROGUE-1))  |(1<<(CLASS_PRIEST-1)) |(1<<(CLASS_SHAMAN-1))| \
-     (1<<(CLASS_MAGE-1))   |(1<<(CLASS_WARLOCK-1))|(1<<(CLASS_DRUID-1)) | \
-     (1<<(CLASS_DEATH_KNIGHT-1)) )
+// Every class id in ChrClasses.dbc, as a bit per id.
+//
+// Stock 3.3.5a listed the ten creatable classes by name here, and the loaders
+// use it as the gate on whether a class in the world database is a real one --
+// `playercreateinfo` with a class outside it is dropped with "Wrong class %u".
+// Ascension's ChrClasses.dbc holds ids 1..32 with no gaps, so "all playable"
+// really is all thirty-two bits; this is not a check being loosened but the
+// same check against a bigger table. Widen it and the stock ten still pass.
+//
+// Named ids are kept below for the reader: 12..32 are Ascension's, and 27 is
+// Sun Cleric.
+#define CLASSMASK_ALL_PLAYABLE  (0xFFFFFFFFu)
+
+/// The last class id stock 3.3.5a shipped. Ids above it come from Ascension's
+/// ChrClasses.dbc and have no level-based talent progression of their own --
+/// their trees are authored (tools/make-talents.py) rather than inherited.
+#define MAX_STOCK_CLASS   11
+
+/// Talent points granted per tree to a class above MAX_STOCK_CLASS, at level
+/// one, before the per-level points on top. It exists so a freshly created
+/// character of an added class has something to spend -- their trees are
+/// authored rather than grown, so there is no level-ten gate to inherit.
+#define TALENT_POINTS_PER_TREE 5
+
+/// Points that must already be spent in a tab before its tier N opens, for a
+/// class above MAX_STOCK_CLASS: TierID * this.
+///
+/// Stock uses MAX_TALENT_RANK (5) and that is right for a stock tree, whose
+/// early tiers are full of five-rank talents -- four talents there absorb far
+/// more than five points. Ascension's trees are not: 36 to 49 talents of which
+/// three or four carry a second rank, so a tier of four columns absorbs about
+/// 4.2 points and the cumulative total falls behind 5N immediately. At 5 the
+/// deep tiers were not hard to reach, they were arithmetically UNREACHABLE, and
+/// combined with the per-tree cap that used to sit in Player::LearnTalent even
+/// tier 1 was: it wanted five points spent and the cap refused the sixth, so an
+/// added class could only ever pick its first row.
+///
+/// Four is the number of columns: fill a tier, unlock the next. The client is
+/// given the same rule in client-overrides/Interface/FrameXML/TalentFrameBase.lua,
+/// and tools/make-talents.py refuses to write a tree this cannot open.
+#define TALENT_POINTS_PER_TIER_ADDED 4
 
 #define CLASSMASK_ALL_CREATURES ((1<<(CLASS_WARRIOR-1)) | (1<<(CLASS_PALADIN-1)) | (1<<(CLASS_ROGUE-1)) | (1<<(CLASS_MAGE-1)) )
 #define MAX_CREATURE_CLASS 4
