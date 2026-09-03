@@ -83,6 +83,16 @@ namespace
         bool help = false;
         std::string offMesh;
         int threads = 0;
+
+        // Extra archives, opened AFTER the locale set so they outrank every stock
+        // one -- the same last-wins rule Read() walks in StormLibArchive. Repeated
+        // --archive on the command line. Absolute paths are used as given; a
+        // relative name resolves under --src, so `--archive patch-M.MPQ` finds it
+        // beside `common.MPQ`. Stock 3.3.5a never needed this: the client's own
+        // patch list is fixed and the extractor's list mirrored it -- a
+        // third-party patch set (Ascension's patch-M/S/T/WA/WB*/WC*) is the first
+        // time an archive outside that list carried DBCs or terrain.
+        std::vector<std::string> extraArchives;
     };
 
     ExtractorConsole g_console;
@@ -140,6 +150,46 @@ namespace
         return found.empty() ? std::string() : found.front();
     }
 
+    /**
+     * @brief Open each --archive on top of the locale set, so it outranks every
+     * stock one.
+     *
+     * A relative name resolves under @p dataDir, the same rule the stock chain
+     * uses in OpenClientData. A missing file is an error naming the path -- the
+     * whole point of the flag is that the caller meant that archive, and skipping
+     * it silently would fold back into the same defect this fixes.
+     *
+     * @returns the number of extra archives opened, or -1 if any named path is
+     * missing or refuses to open. The primary and per-locale chains both share
+     * this so a --locale all run gains the same overrides in every language.
+     */
+    int OpenExtraArchives(StormLibArchive& mpq, const std::string& dataDir,
+                          const std::vector<std::string>& extras)
+    {
+        int opened = 0;
+        for (const std::string& rel : extras)
+        {
+            std::filesystem::path p(rel);
+            const std::string full = p.is_absolute()
+                                       ? rel
+                                       : (dataDir + "/" + rel);
+            std::error_code ec;
+            if (!std::filesystem::exists(full, ec))
+            {
+                g_console.Error("--archive: no such file: " + full);
+                return -1;
+            }
+            if (!mpq.AddArchive(full))
+            {
+                g_console.Error("--archive: cannot open (not an MPQ, or unreadable): "
+                                + full);
+                return -1;
+            }
+            ++opened;
+        }
+        return opened;
+    }
+
     void Usage()
     {
         std::printf(
@@ -181,6 +231,15 @@ namespace
 "                  which vessel map.                  (default: vessels.txt)\n"
 "  --offmesh <f>   navmesh links the generated mesh cannot bridge -- a jump\n"
 "                  down a dock, a gap over water.     (default: offmesh.txt)\n"
+"\n"
+"EXTRA ARCHIVES -- may be given more than once\n"
+"\n"
+"  --archive <mpq> a further MPQ to open, AFTER the locale set, so it wins\n"
+"                  the last-wins search the client itself does. Absolute or\n"
+"                  relative to --src. Applies to every locale in --locale all.\n"
+"                  A missing file is an error naming the path, not a skip.\n"
+"                  For third-party patch sets outside the stock chain --\n"
+"                  stock 3.3.5a needs none of these.\n"
 "\n"
 "OTHER\n"
 "\n"
@@ -224,6 +283,7 @@ namespace
             else if (a == "--offmesh" && hasValue) { out.offMesh = argv[++i]; }
             else if (a == "--threads" && hasValue) { out.threads = std::atoi(argv[++i]); }
             else if (a == "--no-menu") { out.noMenu = true; }
+            else if (a == "--archive" && hasValue) { out.extraArchives.emplace_back(argv[++i]); }
             else if (a == "-h" || a == "--help") { out.help = true; return false; }
             else
             {
@@ -738,6 +798,9 @@ int main(int argc, char** argv)
             g_console.Stop();
             return 0;
         }
+        // Field-by-field, not a whole-struct copy: the menu answers a subset of
+        // Options (what to bake, and the two paths), and everything else the
+        // command line already set -- --archive included -- must survive it.
         opt.dbc = choice.dbc;
         opt.tiles = choice.tiles;
         opt.goModels = choice.goModels;
@@ -836,13 +899,25 @@ int main(int argc, char** argv)
     }
 
     StormLibArchive mpq;
-    const int opened = mpq.OpenClientData(opt.src, ClientArchives335a(),
-                                          ClientLocaleArchives335a(), opt.locale);
+    int opened = mpq.OpenClientData(opt.src, ClientArchives335a(),
+                                    ClientLocaleArchives335a(), opt.locale);
     if (!opened)
     {
         g_console.Error("no client archives opened under " + opt.src);
         g_console.Stop();
         return 1;
+    }
+    // AFTER the locale set: the last archive opened is the first Read() consults,
+    // so a --archive can override a DBC or an ADT that a stock or locale archive
+    // also carries. That is what makes it useful.
+    {
+        const int extras = OpenExtraArchives(mpq, opt.src, opt.extraArchives);
+        if (extras < 0)
+        {
+            g_console.Stop();
+            return 1;
+        }
+        opened += extras;
     }
     {
         char msg[512];
@@ -877,6 +952,14 @@ int main(int argc, char** argv)
             {
                 g_console.Warn("  no archives for locale " + loc + " -- skipped");
                 continue;
+            }
+            // Same last-wins layering as the primary chain, in every language --
+            // an added DBC belongs in every locale's dbc/<loc>/ folder, not just
+            // the primary one.
+            if (OpenExtraArchives(other, opt.src, opt.extraArchives) < 0)
+            {
+                g_console.Stop();
+                return 1;
             }
 
             g_console.SetLocale(loc);
