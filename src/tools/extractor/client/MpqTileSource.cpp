@@ -96,6 +96,20 @@ namespace world::terrain
                std::to_string(tx) + ".adt";
     }
 
+    bool MpqTileSource::HasAdt(uint32_t mapId, int tx, int ty) const
+    {
+        const std::string path = AdtPath(mapId, tx, ty);
+        if (path.empty())
+        {
+            return false;
+        }
+        // The archive is the truth against the WDT: a WDT MAIN entry with HasAdt set
+        // but no matching file anywhere in the chain is a lie in the WDT, not a loss
+        // of the file. BakeMap distinguishes absent (return false here) from failed
+        // (return true, but Load returns null anyway) on the strength of this answer.
+        return m_archive.Contains(path);
+    }
+
     std::string MpqTileSource::WdtPath(uint32_t mapId) const
     {
         const std::string name = MapDirectory(mapId);

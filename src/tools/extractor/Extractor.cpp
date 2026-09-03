@@ -653,21 +653,33 @@ namespace
         return ok;
     }
 
+    struct BakeMapResult
+    {
+        int written = 0;   // ADT loaded and tile written to disk
+        int failed  = 0;   // ADT present in an archive but Load or Write returned false
+        int absent  = 0;   // WDT declared HasAdt but no archive in the chain carries it
+    };
+
     // One map's tiles. A map is either an ADT grid or a single global WMO; both end up
     // as the same payload, so the runtime has nothing to reconcile.
     //
-    // @return how many tiles this map FAILED to bake. A failure that only reaches the
-    // log is a failure nobody acts on: the install script deletes the previous data
-    // before running this, and then reads the exit status as "the extraction is
-    // complete". A map missing half its tiles must not exit 0.
-    int BakeMap(MpqTileSource& source, uint32_t mapId, const std::string& name,
-                const std::string& dest)
+    // Absent vs failed: a WDT MAIN flag of HasAdt with no ADT file in any open archive
+    // is the WDT lying, not the file going missing -- the archive is the ground truth
+    // and the file is the truth. Blizzard's WDTs agree with their ADTs, so stock data
+    // never surfaced this and BakeMap counted every "no tile back" as a failure; a
+    // third-party WDT (Jaedenar's declares 988, ships 6) does not, and lumping the
+    // 982 non-existent tiles in with the failure count made a complete bake read as
+    // 982 short. Absent is a per-map count that appears in the printed line and in
+    // the end-of-bake summary; only `failed` reaches the caller's exit status.
+    BakeMapResult BakeMap(MpqTileSource& source, uint32_t mapId, const std::string& name,
+                          const std::string& dest)
     {
+        BakeMapResult r;
         const WdtData* wdt = source.Wdt(mapId);
         if (!wdt)
         {
             // Map.dbc lists identities that ship no WDT at all; that is not a failure.
-            return 0;
+            return r;
         }
 
         if (!wdt->HasAnyAdt())
@@ -678,7 +690,7 @@ namespace
             // count exists to report.
             if (!wdt->hasGlobalWmo)
             {
-                return 0;
+                return r;
             }
 
             auto tile = source.Load(mapId, 0, 0);
@@ -688,7 +700,8 @@ namespace
             std::snprintf(msg, sizeof(msg), "  map %4u %-24s global WMO %s", mapId,
                           name.c_str(), ok ? "ok" : "FAILED");
             if (ok) { g_console.Detail(msg); } else { g_console.Error(msg); }
-            return ok ? 0 : 1;
+            if (!ok) { r.failed = 1; }
+            return r;
         }
 
         size_t expected = 0;
@@ -700,7 +713,6 @@ namespace
             }
         }
 
-        int written = 0, failed = 0;
         for (int ty = 0; ty < 64; ++ty)
         {
             for (int tx = 0; tx < 64; ++tx)
@@ -709,29 +721,58 @@ namespace
                 {
                     continue;
                 }
-                g_console.SetCounts(size_t(written), expected);
+                // The archive gets asked before Load does the work. If no open handle
+                // in the chain carries the ADT, this is an overdeclared WDT and the
+                // tile is absent -- not a failure to bake. Load would return null
+                // either way, but conflating the two is what this branch avoids.
+                if (!source.HasAdt(mapId, tx, ty))
+                {
+                    ++r.absent;
+                    continue;
+                }
+                g_console.SetCounts(size_t(r.written), expected);
                 Tick();
                 auto tile = source.Load(mapId, tx, ty);
                 if (!tile || !tile->hasTerrain)
                 {
-                    ++failed;
+                    ++r.failed;
                     continue;
                 }
                 if (WriteTile(*tile, dest + "/" + TileFileName(mapId, tx, ty)))
                 {
-                    ++written;
+                    ++r.written;
                 }
                 else
                 {
-                    ++failed;
+                    ++r.failed;
                 }
             }
         }
         char msg[256];
-        std::snprintf(msg, sizeof(msg), "  map %4u %-24s %5d tiles%s", mapId,
-                      name.c_str(), written, failed ? " (SOME FAILED)" : "");
-        if (failed) { g_console.Warn(msg); } else { g_console.Detail(msg); }
-        return failed;
+        // The line reports what was written and, when the WDT overdeclared, how many
+        // tiles it named that no archive carried -- via Detail (an observation about
+        // the data), not Warn (a call to act). Warn is reserved for real failures.
+        if (r.absent > 0 && r.failed == 0)
+        {
+            std::snprintf(msg, sizeof(msg),
+                          "  map %4u %-24s %5d tiles (%d declared, absent)",
+                          mapId, name.c_str(), r.written, r.absent);
+        }
+        else if (r.absent > 0 && r.failed > 0)
+        {
+            std::snprintf(msg, sizeof(msg),
+                          "  map %4u %-24s %5d tiles (%d declared, absent)"
+                          " (SOME FAILED)",
+                          mapId, name.c_str(), r.written, r.absent);
+        }
+        else
+        {
+            std::snprintf(msg, sizeof(msg), "  map %4u %-24s %5d tiles%s", mapId,
+                          name.c_str(), r.written,
+                          r.failed ? " (SOME FAILED)" : "");
+        }
+        if (r.failed) { g_console.Warn(msg); } else { g_console.Detail(msg); }
+        return r;
     }
 }
 
@@ -1023,13 +1064,44 @@ int main(int argc, char** argv)
     g_console.Log("tiles -> " + tileDir);
 
     int tileFailures = 0;
+    int totalAbsent = 0;
+    struct AbsentRow { uint32_t mapId; std::string name; int written; int absent; };
+    std::vector<AbsentRow> absentRows;
     for (const auto& entry : maps.All())
     {
         if (opt.mapFilter >= 0 && uint32_t(opt.mapFilter) != entry.first)
         {
             continue;
         }
-        tileFailures += BakeMap(source, entry.first, entry.second, tileDir);
+        const BakeMapResult r = BakeMap(source, entry.first, entry.second, tileDir);
+        tileFailures += r.failed;
+        totalAbsent  += r.absent;
+        if (r.absent > 0)
+        {
+            absentRows.push_back({entry.first, entry.second, r.written, r.absent});
+        }
+    }
+
+    // The end-of-bake absent summary is the cheap paper trail: a later reader of the
+    // log can tell "the WDT declared these and no archive had them" (chose not to
+    // bake, per map) from "went missing during load" (which appears as failed).
+    // Written to Detail so a green bake is still green.
+    if (!absentRows.empty())
+    {
+        char hdr[128];
+        std::snprintf(hdr, sizeof(hdr),
+                      "absent: %d tile(s) declared by WDT with no ADT in the chain,"
+                      " across %zu map(s):",
+                      totalAbsent, absentRows.size());
+        g_console.Detail(hdr);
+        for (const auto& row : absentRows)
+        {
+            char msg[256];
+            std::snprintf(msg, sizeof(msg),
+                          "  map %4u %-24s written=%d absent=%d",
+                          row.mapId, row.name.c_str(), row.written, row.absent);
+            g_console.Detail(msg);
+        }
     }
 
     if (!BakeNav(opt, tileDir))

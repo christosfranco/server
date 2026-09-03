@@ -35,6 +35,14 @@ namespace world::terrain
         std::string AdtPath(uint32_t mapId, int tx, int ty) const;
         std::string WdtPath(uint32_t mapId) const;
 
+        // Does the archive chain carry the ADT this WDT flag names? True only when
+        // an open handle actually contains the file -- not "the WDT says so": a
+        // third-party WDT can overdeclare (Ascension's Jaedenar flags 988 tiles as
+        // HasAdt but ships 6), and asking the WDT again would count that lie as
+        // truth. Read from the archive by SFileHasFile via StormLibArchive::Contains,
+        // so a handle that could not be opened at all does NOT read as "has file".
+        bool HasAdt(uint32_t mapId, int tx, int ty) const;
+
         // Parsed once per map; the tile bake walks it to know which tiles exist.
         const WdtData* Wdt(uint32_t mapId);
 
