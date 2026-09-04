@@ -485,18 +485,56 @@ void Player::RepopAtGraveyard()
     // area to Dragonblight (zone 65, map 571) -- the linked graveyard
     // that mapEntry->CorpseMapID does not name, so GetClosestGraveYard
     // returned entryFar without ever printing the "no linked graveyard"
-    // line. There is no safe TeleportTo from here; write the destination
-    // onto the persisted position fields so the next login lands on the
-    // home bind, and let LogoutPlayer delete the player from the map he
-    // is already on. RelocateToHomebind updates m_mapId and Place; the
-    // SaveToDB a few statements later picks that up (see
-    // PlayerSave.cpp `savedMap = GetMapId()` under the not-being-
-    // teleported branch).
+    // line. There is no safe TeleportTo from here; write the resolved
+    // destination onto the persisted-position fields so the next login
+    // lands there, and let LogoutPlayer delete the player from the map
+    // he is already on (RemoveFromWorld -> ClearUpdateMask(true) ->
+    // RemoveFromClientUpdateList clears the update-set cleanly on the
+    // ordinary teardown path).
+    //
+    // Refinement, PLAN 14.23: honour the resolved graveyard, not the
+    // home bind. bb185cc35 wrote RelocateToHomebind unconditionally,
+    // which is wrong gameplay: a character who died on a map that DOES
+    // have a linked graveyard (e.g. map 900 with WorldSafeLocs 9000
+    // now that PLAN 14.24's AreaTable supplement gives Ascension's
+    // tiles real zones and game_graveyard_zone rebinds them) should
+    // log back in at that graveyard. ClosestGrave above already ran
+    // the same resolution chain the non-logout path uses:
+    // GetClosestGraveYard (which prefers the same-map candidate over
+    // a cross-continent one -- ObjectMgrGraveyard.cpp returns
+    // entryNear before entryEntr before entryFar, so a WorldSafeLocs
+    // on map 900 always wins over one on map 571 for a death on map
+    // 900), then the same-map WorldSafeLocs 2D-distance fallback. If
+    // it returned a location, use it; otherwise fall back to the home
+    // bind. Either way we do not teleport live. SetLocationMapId +
+    // Place().MoveTo update m_mapId and Place; SaveToDB a few
+    // statements later picks GetMapId() up under the not-being-
+    // teleported branch (see PlayerSave.cpp `savedMap = GetMapId()`).
+    // The player stays dead across the write: a dead player logging
+    // in at a graveyard with a corpse to run to is stock behaviour
+    // (Player::LoadFromDB -> LoadCorpse: dead + corpse present sets
+    // the release timer from the corpse's map, dead + no corpse
+    // ResurrectPlayer(0.5f)s to prevent an unrecoverable state;
+    // SpawnCorpseBones already ran on the death that led here, so
+    // the corpse the ghost needs to reclaim is on the map he died
+    // on, not at the graveyard he now respawns at).
     if (GetSession()->PlayerLogout())
     {
-        sLog.outError("RepopAtGraveyard: player %s(%u) died on map %u; logout in progress -- deferring live teleport, relocating to home bind (map %u) for the next login.",
-                      GetName(), GetGUIDLow(), GetMapId(), m_homebindMapId);
-        RelocateToHomebind();
+        if (ClosestGrave)
+        {
+            sLog.outError("RepopAtGraveyard: player %s(%u) died on map %u; logout in progress -- no live teleport, next login at graveyard %u on map %u (%.1f, %.1f, %.1f)",
+                          GetName(), GetGUIDLow(), GetMapId(),
+                          ClosestGrave->ID, ClosestGrave->Continent,
+                          ClosestGrave->LocX, ClosestGrave->LocY, ClosestGrave->LocZ);
+            SetLocationMapId(ClosestGrave->Continent);
+            Place().MoveTo(ClosestGrave->LocX, ClosestGrave->LocY, ClosestGrave->LocZ);
+        }
+        else
+        {
+            sLog.outError("RepopAtGraveyard: player %s(%u) died on map %u; logout in progress -- no graveyard resolved, next login at home bind (map %u)",
+                          GetName(), GetGUIDLow(), GetMapId(), m_homebindMapId);
+            RelocateToHomebind();
+        }
         return;
     }
 
