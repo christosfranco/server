@@ -423,6 +423,51 @@ void Player::RepopAtGraveyard()
     // stop countdown until repop
     m_deathTimer = 0;
 
+    // No linked graveyard for the anchor zone (Blizzard data covers every
+    // stock zone; a third-party or custom map like Ascension's map 900
+    // can leave the AreaTable row absent, so GetZoneId returns 0 and
+    // GetClosestGraveYard prints "Zone 0 ... does not have a linked
+    // graveyard" and returns NULL). Falling through and doing nothing
+    // leaves a dead player in a corpse map without a corpse, which the
+    // teardown paths (WorldSession::LogoutPlayer, HandleMovementOpcodes)
+    // then unravel in unexpected order. Fall back to a) the nearest
+    // WorldSafeLocs entry on the same map by 2D distance, b) the home
+    // bind, c) refuse to leave things silent. PLAN 14.23.
+    if (!ClosestGrave)
+    {
+        WorldSafeLocsEntry const* fallback = NULL;
+        float bestDist2 = 0.0f;
+        for (uint32 i = 0; i < sWorldSafeLocsStore.GetNumRows(); ++i)
+        {
+            WorldSafeLocsEntry const* entry = sWorldSafeLocsStore.LookupEntry(i);
+            if (!entry || entry->Continent != graveMap)
+            {
+                continue;
+            }
+            float dx = entry->LocX - graveX;
+            float dy = entry->LocY - graveY;
+            float d2 = dx * dx + dy * dy;
+            if (!fallback || d2 < bestDist2)
+            {
+                fallback = entry;
+                bestDist2 = d2;
+            }
+        }
+
+        if (fallback)
+        {
+            sLog.outError("RepopAtGraveyard: player %s(%u) died in map %u with no linked graveyard for the anchor zone; falling back to WorldSafeLocs %u on the same map (dist %.1f).",
+                          GetName(), GetGUIDLow(), graveMap, fallback->ID, sqrtf(bestDist2));
+            ClosestGrave = fallback;
+        }
+        else
+        {
+            sLog.outError("RepopAtGraveyard: player %s(%u) died in map %u with no linked graveyard for the anchor zone and no WorldSafeLocs entry on that map; teleporting to home bind (map %u).",
+                          GetName(), GetGUIDLow(), graveMap, m_homebindMapId);
+            TeleportToHomebind();
+        }
+    }
+
     // if no grave found, stay at the current location
     // and don't show spirit healer location
     if (ClosestGrave)

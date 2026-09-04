@@ -788,14 +788,23 @@ void Object::ClearUpdateMask(bool remove)
         }
     }
 
-    if (m_objectUpdated)
+    if (remove)
     {
-        if (remove)
+        // Force removal from the map's client-update set unconditionally,
+        // regardless of m_objectUpdated. Under normal flow the two agree,
+        // but if they ever desynced (m_objectUpdated=false while the set
+        // still holds the pointer) the SendObjectUpdates crash of
+        // PLAN 14.23 is the outcome once the object is freed. set::erase
+        // is a no-op on an absent pointer, so this is safe on the normal
+        // path too. Only meaningful on a real WorldObject/Item -- a bare
+        // Object never enters the set.
+        if (m_uint32Values)
         {
             RemoveFromClientUpdateList();
         }
-        m_objectUpdated = false;
     }
+
+    m_objectUpdated = false;
 }
 
 /**

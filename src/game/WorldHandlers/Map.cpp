@@ -3360,6 +3360,18 @@ void Map::SendObjectUpdates()
     {
         Object* obj = *i_objectsToClientUpdate.begin();
         i_objectsToClientUpdate.erase(i_objectsToClientUpdate.begin());
+        // Defence in depth: an object destroyed while still in the update
+        // set turns into a jump through a stale vtable in BuildUpdateData
+        // and takes down the whole world. That should never happen -- the
+        // Object destructor asserts on it and RemoveFromWorld now
+        // unconditionally clears the entry -- but if it ever does, skip
+        // and name what was left. PLAN 14.23.
+        if (!obj || !obj->IsInWorld())
+        {
+            sLog.outError("Map::SendObjectUpdates: skipped dead entry %s on map %u -- object was destroyed or left the world without clearing its update-set membership",
+                          obj ? obj->GetObjectGuid().GetString().c_str() : "<null>", GetId());
+            continue;
+        }
         obj->BuildUpdateData(update_players);
     }
 
