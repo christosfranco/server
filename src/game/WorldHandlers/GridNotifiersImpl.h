@@ -86,6 +86,16 @@ inline void CreatureCreatureRelocationWorker(Creature* c1, Creature* c2)
     }
 }
 
+// Ascender: PLAN.md 14.21. A creature scheduled for removal via
+// Map::AddObjectToRemoveList is already out of world (Object::RemoveFromWorld
+// cleared m_inWorld inside CleanupsBeforeDelete) but its grid link is only
+// unhooked on the next Map::RemoveAllObjectsInRemoveList sweep. During that
+// one-tick window the creature sits in the grid with IsInWorld()==false and
+// IsAlive()==true, so the workers below reach it and call c->AI()->
+// MoveInLineOfSight on it. That is a no-op at best -- the AI cannot start an
+// attack on a dying object -- and a null-deref crash with an Eluna-wrapped
+// AI (see ElunaCreatureAI.h). Match the IsAlive() early-outs that already
+// live in these visitors with an IsInWorld() one.
 inline void MaNGOS::PlayerRelocationNotifier::Visit(CreatureMapType& m)
 {
     if (!i_player.IsAlive() || i_player.IsTaxiFlying())
@@ -96,7 +106,7 @@ inline void MaNGOS::PlayerRelocationNotifier::Visit(CreatureMapType& m)
     for (CreatureMapType::iterator iter = m.begin(); iter != m.end(); ++iter)
     {
         Creature* c = iter->getSource();
-        if (c->IsAlive())
+        if (c->IsAlive() && c->IsInWorld())
         {
             PlayerCreatureRelocationWorker(&i_player, c);
         }
@@ -106,7 +116,7 @@ inline void MaNGOS::PlayerRelocationNotifier::Visit(CreatureMapType& m)
 template<>
 inline void MaNGOS::CreatureRelocationNotifier::Visit(PlayerMapType& m)
 {
-    if (!i_creature.IsAlive())
+    if (!i_creature.IsAlive() || !i_creature.IsInWorld())
     {
         return;
     }
@@ -124,7 +134,7 @@ inline void MaNGOS::CreatureRelocationNotifier::Visit(PlayerMapType& m)
 template<>
 inline void MaNGOS::CreatureRelocationNotifier::Visit(CreatureMapType& m)
 {
-    if (!i_creature.IsAlive())
+    if (!i_creature.IsAlive() || !i_creature.IsInWorld())
     {
         return;
     }
@@ -132,7 +142,7 @@ inline void MaNGOS::CreatureRelocationNotifier::Visit(CreatureMapType& m)
     for (CreatureMapType::iterator iter = m.begin(); iter != m.end(); ++iter)
     {
         Creature* c = iter->getSource();
-        if (c != &i_creature && c->IsAlive())
+        if (c != &i_creature && c->IsAlive() && c->IsInWorld())
         {
             CreatureCreatureRelocationWorker(c, &i_creature);
         }
