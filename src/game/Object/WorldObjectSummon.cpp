@@ -680,11 +680,24 @@ void WorldObject::AddToClientUpdateList()
 /**
  * @brief Remove from client update list
  *
- * Removes this object from the map's update list.
+ * Removes this object from the map's update list, or a no-op when the object
+ * has no current map. An object with no map is not in any map's update set,
+ * so this is safe. The non-asserting FindMap() is deliberate: after
+ * Map::Remove has already run RemoveFromWorld and ResetMap on us, the delete
+ * of a queued TemporarySummon runs ~Creature -> CleanupsBeforeDelete ->
+ * WorldObject::CleanupsBeforeDelete -> RemoveFromWorld -> ClearUpdateMask
+ * a second time, and PLAN 14.23's unconditional erase would hit
+ * GetMap()->MANGOS_ASSERT(m_currMap) with a null map. Under normal flow the
+ * first ClearUpdateMask call happens with the map still set and does the
+ * real erase; this fallback only fires on the redundant second call from
+ * the destructor path.
  */
 void WorldObject::RemoveFromClientUpdateList()
 {
-    GetMap()->RemoveUpdateObject(this);
+    if (Map* map = FindMap())
+    {
+        map->RemoveUpdateObject(this);
+    }
 }
 
 /**

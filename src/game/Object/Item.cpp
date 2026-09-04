@@ -1027,12 +1027,23 @@ void Item::AddToClientUpdateList()
 
 /**
  * @brief Removes the item from the map client update list.
+ *
+ * Sibling of WorldObject::RemoveFromClientUpdateList: takes the same
+ * FindMap() precaution against the destructor-path double-call. When
+ * ~Player runs after Map::Remove has already reset the player's map,
+ * Player::RemoveFromWorld iterates equipped items and calls their
+ * ClearUpdateMask(true), and pl->GetMap() would then assert on a null
+ * m_currMap. An item on a player with no map is not in any map's update
+ * set, so the fallback is a legal no-op.
  */
 void Item::RemoveFromClientUpdateList()
 {
     if (Player* pl = GetOwner())
     {
-        pl->GetMap()->RemoveUpdateObject(this);
+        if (Map* map = pl->FindMap())
+        {
+            map->RemoveUpdateObject(this);
+        }
     }
 }
 
