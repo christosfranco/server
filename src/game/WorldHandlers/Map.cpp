@@ -3366,10 +3366,29 @@ void Map::SendObjectUpdates()
         // Object destructor asserts on it and RemoveFromWorld now
         // unconditionally clears the entry -- but if it ever does, skip
         // and name what was left. PLAN 14.23.
-        if (!obj || !obj->IsInWorld())
+        //
+        // The third 14.23 crash (mangosd 2963575, 2026-09-04 17:43:24)
+        // showed the previous version WAS the crash: on a freed Player,
+        // GetObjectGuid() reads m_uint32Values (offset 0x10, cleared to
+        // NULL on delete), inline GetString then walked that NULL as
+        // its own this, and the log line SEGV'd at
+        // `ObjectGuid::GetString + 335` (mov 0x0(%rbp),%rax with rbp=0).
+        // IsInWorld likewise reads a byte from the object; on freed
+        // memory that byte can carry any value, so it is not a reliable
+        // gate on its own either. Log the pointer's numeric address and
+        // nothing that dereferences the object -- the address is enough
+        // to line up against the destructor's `delete` log if we later
+        // add one; the guid it would have had is not knowable from a
+        // freed object anyway.
+        if (!obj)
         {
-            sLog.outError("Map::SendObjectUpdates: skipped dead entry %s on map %u -- object was destroyed or left the world without clearing its update-set membership",
-                          obj ? obj->GetObjectGuid().GetString().c_str() : "<null>", GetId());
+            sLog.outError("Map::SendObjectUpdates: skipped null entry on map %u -- an object was inserted as NULL into the update set", GetId());
+            continue;
+        }
+        if (!obj->IsInWorld())
+        {
+            sLog.outError("Map::SendObjectUpdates: skipped stale entry %p on map %u -- object left the update set without clearing its membership (m_inWorld=0); dropping without dereferencing further",
+                          (void*)obj, GetId());
             continue;
         }
         obj->BuildUpdateData(update_players);

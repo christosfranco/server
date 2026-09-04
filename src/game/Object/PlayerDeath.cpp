@@ -460,12 +460,44 @@ void Player::RepopAtGraveyard()
                           GetName(), GetGUIDLow(), graveMap, fallback->ID, sqrtf(bestDist2));
             ClosestGrave = fallback;
         }
-        else
+        else if (!GetSession()->PlayerLogout())
         {
             sLog.outError("RepopAtGraveyard: player %s(%u) died in map %u with no linked graveyard for the anchor zone and no WorldSafeLocs entry on that map; teleporting to home bind (map %u).",
                           GetName(), GetGUIDLow(), graveMap, m_homebindMapId);
             TeleportToHomebind();
         }
+        // If we are inside LogoutPlayer, the last-resort log line and
+        // the deferred home-bind relocation below cover it.
+    }
+
+    // A live TeleportTo from inside a WorldSession::LogoutPlayer dead-
+    // player branch is unsafe. Player::TeleportTo across maps calls
+    // oldmap->Remove(this, false), then HandleMoveWorldportAckOpcode
+    // pulls the player synchronously into the new map, and LogoutPlayer
+    // then deletes the player through its own map. The player pointer
+    // has been observed to remain in the OLD map's client-update set
+    // past the delete: PLAN 14.23's third crash, mangosd 2963575,
+    // 2026-09-04 17:43:24, a Player at rbp=0x55db356437a0 with
+    // m_uint32Values zeroed, sitting in map 900's
+    // i_objectsToClientUpdate one tick after the destructor ran. The
+    // trigger this session was `.go xyz ... 900` -> fall -> die ->
+    // logout, and GetClosestGraveYard resolving map 900's baked ADT
+    // area to Dragonblight (zone 65, map 571) -- the linked graveyard
+    // that mapEntry->CorpseMapID does not name, so GetClosestGraveYard
+    // returned entryFar without ever printing the "no linked graveyard"
+    // line. There is no safe TeleportTo from here; write the destination
+    // onto the persisted position fields so the next login lands on the
+    // home bind, and let LogoutPlayer delete the player from the map he
+    // is already on. RelocateToHomebind updates m_mapId and Place; the
+    // SaveToDB a few statements later picks that up (see
+    // PlayerSave.cpp `savedMap = GetMapId()` under the not-being-
+    // teleported branch).
+    if (GetSession()->PlayerLogout())
+    {
+        sLog.outError("RepopAtGraveyard: player %s(%u) died on map %u; logout in progress -- deferring live teleport, relocating to home bind (map %u) for the next login.",
+                      GetName(), GetGUIDLow(), GetMapId(), m_homebindMapId);
+        RelocateToHomebind();
+        return;
     }
 
     // if no grave found, stay at the current location
