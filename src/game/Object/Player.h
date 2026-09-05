@@ -2149,6 +2149,23 @@ class Player : public Unit
         // Delete a player from the database
         static void DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRealmChars = true, bool deleteFinally = false);
 
+        // The `character_*` side tables whose primary key is the player's low
+        // guid. This is the authority both DeleteFromDB (drop the character)
+        // and SaveToDB's create path (sanitise a reused guid whose side tables
+        // still hold rows -- PLAN 15.4) work from, so a schema table added to
+        // this list is cleared by both paths at once. `mail`, `character_pet`,
+        // `character_social.friend`, `item_instance.owner_guid` and the
+        // guild-log tables are keyed on other columns and stay in DeleteFromDB.
+        static char const* const* GetCharacterSideTables(size_t* count);
+
+        // Clear stale side-table rows for `lowguid` inside the CURRENT open
+        // CharacterDatabase transaction. Returns a space-separated list of
+        // table names that actually had rows; empty string when the guid was
+        // clean. Called by SaveToDB's first-save branch so that a reused guid
+        // does not silently fail character creation via a primary-key
+        // collision in the queued INSERTs (PLAN 15.4).
+        static std::string SanitiseStaleCharacterRows(uint32 lowguid);
+
         // Delete old characters from the database
         static void DeleteOldCharacters();
 

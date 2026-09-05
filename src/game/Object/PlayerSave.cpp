@@ -145,6 +145,27 @@ void Player::SaveToDB()
     }
 #endif /* ENABLE_ELUNA */
 
+    // PLAN 15.4. On the FIRST save (character create) the guid we were handed
+    // may already carry rows in side tables: sObjectMgr.GeneratePlayerLowGuid
+    // is seeded from MAX(`characters`.`guid`) + 1 at boot, so a guid whose
+    // `characters` row was purged while the async queue still held its
+    // side-table inserts is handed out again. _SaveActions / _SaveSkills /
+    // _SaveSpells below do straight INSERT, and a primary-key collision
+    // silently fails the transaction: CHAR_CREATE_SUCCESS was sent, the
+    // `characters` INSERT queued, and nothing lands. Clear those rows in this
+    // same transaction, before the inserts, so the create is atomic against
+    // them; log one line naming the tables so a poisoned guid is visible in
+    // world-characters.log rather than only in the empty result.
+    if (HasAtLoginFlag(AT_LOGIN_FIRST))
+    {
+        std::string cleared = Player::SanitiseStaleCharacterRows(GetGUIDLow());
+        if (!cleared.empty())
+        {
+            sLog.outError("Player::Create: guid %u had stale rows in %s; cleared",
+                          GetGUIDLow(), cleared.c_str());
+        }
+    }
+
     static SqlStatementID delChar ;
     static SqlStatementID insChar ;
 

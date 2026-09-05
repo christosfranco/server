@@ -997,7 +997,28 @@ void ObjectMgr::PackGroupIds()
  */
 void ObjectMgr::SetHighestGuids()
 {
-    QueryResult* result = CharacterDatabase.Query("SELECT MAX(`guid`) FROM `characters`");
+    // PLAN 15.4. The seed is MAX(guid) over `characters` AND every side
+    // table that keys on the low guid -- not just `characters`. Stock mangos
+    // reads only `characters`, and a guid whose `characters` row is gone but
+    // whose side-table rows survive (from a purge racing the async queue, or
+    // crash-time state) gets handed out again, whereupon the create's queued
+    // INSERTs collide on the primary key and the character never lands. The
+    // create-time sanitiser (Player::SanitiseStaleCharacterRows) also clears
+    // those rows so a race that leaves orphans between boots does not
+    // silently break creation -- but this is the belt: never hand out a
+    // reused-and-poisoned guid in the first place.
+    std::ostringstream charGuidSql;
+    charGuidSql << "SELECT MAX(m) FROM (SELECT MAX(`guid`) AS m FROM `characters`";
+    {
+        size_t sideCount = 0;
+        char const* const* sideTables = Player::GetCharacterSideTables(&sideCount);
+        for (size_t i = 0; i < sideCount; ++i)
+        {
+            charGuidSql << " UNION ALL SELECT MAX(`guid`) FROM `" << sideTables[i] << '`';
+        }
+    }
+    charGuidSql << ") t";
+    QueryResult* result = CharacterDatabase.Query(charGuidSql.str().c_str());
     if (result)
     {
         m_CharGuids.Set((*result)[0].GetUInt32() + 1);

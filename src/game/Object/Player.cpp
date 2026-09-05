@@ -3011,6 +3011,117 @@ void Player::SendInitialSpells()
 }
 
 
+// The `character_*` tables keyed on the player's low guid. Two callers share
+// this list -- DeleteFromDB (drop the character) and SaveToDB (sanitise a
+// reused guid whose side tables still carry rows from a prior character) --
+// so a schema table added to it is reached by both paths at once and neither
+// silently drifts from the other.
+//
+// Kept in file scope on purpose: the shared authority is the SET of tables,
+// not the DELETE statements around it. `character_pet` (owner), `mail`
+// (receiver), `character_social.friend`, `item_instance.owner_guid` and the
+// guild-log tables have their own key columns and stay hand-written in
+// DeleteFromDB below.
+static char const* const kCharacterSideTables[] =
+{
+    "character_account_data",
+    "character_achievement",
+    "character_achievement_progress",
+    "character_action",
+    "character_aura",
+    "character_battleground_data",
+    "character_battleground_random",
+    "character_declinedname",
+    "character_equipmentsets",
+    "character_gifts",
+    "character_glyphs",
+    "character_homebind",
+    "character_instance",
+    "character_inventory",
+    "character_queststatus",
+    "character_queststatus_daily",
+    "character_queststatus_weekly",
+    "character_queststatus_monthly",
+    "character_reputation",
+    "character_skills",
+    "character_social",
+    "character_spell",
+    "character_spell_cooldown",
+    "character_stats",
+    "character_talent",
+    "character_ticket",
+};
+
+char const* const* Player::GetCharacterSideTables(size_t* count)
+{
+    *count = sizeof(kCharacterSideTables) / sizeof(kCharacterSideTables[0]);
+    return kCharacterSideTables;
+}
+
+// PLAN 15.4. Called from SaveToDB's first-save branch (AT_LOGIN_FIRST set)
+// AFTER BeginTransaction and BEFORE the `characters` insert. If the guid a
+// stock max(guid)+1 handed out is already carrying rows in a side table --
+// from a purge that ran while the async queue still held a create's writes,
+// or from crash-time state -- the queued INSERTs in _SaveActions / _SaveSkills
+// / _SaveSpells collide on their primary key, the transaction fails and the
+// character never lands. Clearing those rows here, in the same transaction as
+// the inserts, makes the create atomic against them. Returns a
+// space-separated table list actually cleared, or "" when the guid was clean;
+// the caller logs one error-level line naming the tables so a poisoned guid
+// is visible in `world-characters.log`.
+std::string Player::SanitiseStaleCharacterRows(uint32 lowguid)
+{
+    size_t tableCount = 0;
+    char const* const* tables = GetCharacterSideTables(&tableCount);
+
+    // One round-trip to find which tables actually have rows for this guid,
+    // rather than N unconditional DELETEs whose "affected" count the mangos
+    // Database wrapper does not surface. `UNION ALL` -- not `UNION` -- because
+    // a table's count is a scalar and de-duplication would collapse rows.
+    std::ostringstream scanSql;
+    for (size_t i = 0; i < tableCount; ++i)
+    {
+        if (i)
+        {
+            scanSql << " UNION ALL ";
+        }
+        scanSql << "SELECT '" << tables[i] << "' AS `t`, COUNT(*) AS `c` FROM `"
+                << tables[i] << "` WHERE `guid` = " << lowguid;
+    }
+
+    QueryResult* scan = CharacterDatabase.Query(scanSql.str().c_str());
+    if (!scan)
+    {
+        return std::string();
+    }
+
+    std::string cleared;
+    do
+    {
+        Field* row = scan->Fetch();
+        std::string name = row[0].GetCppString();
+        uint32 count = row[1].GetUInt32();
+        if (count == 0)
+        {
+            continue;
+        }
+        // Queue the DELETE onto the current transaction. Inside a transaction
+        // `PExecute` routes to the transaction's own queue (see
+        // Database::Execute), so this runs atomically with the INSERTs
+        // below rather than as a separate write against the DB.
+        CharacterDatabase.PExecute("DELETE FROM `%s` WHERE `guid` = '%u'", name.c_str(), lowguid);
+        if (!cleared.empty())
+        {
+            cleared += ' ';
+        }
+        cleared += name;
+    }
+    while (scan->NextRow());
+
+    delete scan;
+    return cleared;
+}
+
 /**
  * Deletes a character from the database
  *
@@ -3218,35 +3329,28 @@ void Player::DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRe
             }
 
             CharacterDatabase.PExecute("DELETE FROM `characters` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_account_data` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_declinedname` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_action` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_aura` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_battleground_data` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_gifts` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_glyphs` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_homebind` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_instance` WHERE `guid` = '%u'", lowguid);
+
+            // The `character_*` side tables keyed on the player's low guid.
+            // Kept in one place with the create-time sanitiser (SaveToDB,
+            // PLAN 15.4) so a table added to the schema is dropped by both.
+            {
+                size_t sideCount = 0;
+                char const* const* sideTables = Player::GetCharacterSideTables(&sideCount);
+                for (size_t i = 0; i < sideCount; ++i)
+                {
+                    CharacterDatabase.PExecute("DELETE FROM `%s` WHERE `guid` = '%u'", sideTables[i], lowguid);
+                }
+            }
+
+            // Tables keyed on a column other than `guid` -- they stay
+            // hand-written because the WHERE clause differs.
             CharacterDatabase.PExecute("DELETE FROM `group_instance` WHERE `leaderGuid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_inventory` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_queststatus` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_queststatus_daily` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_queststatus_weekly` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_reputation` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_skills` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_spell` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_spell_cooldown` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_talent` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_ticket` WHERE `guid` = '%u'", lowguid);
             CharacterDatabase.PExecute("DELETE FROM `item_instance` WHERE `owner_guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_social` WHERE `guid` = '%u' OR `friend`='%u'", lowguid, lowguid);
+            CharacterDatabase.PExecute("DELETE FROM `character_social` WHERE `friend`='%u'", lowguid);
             CharacterDatabase.PExecute("DELETE FROM `mail` WHERE `receiver` = '%u'", lowguid);
             CharacterDatabase.PExecute("DELETE FROM `mail_items` WHERE `receiver` = '%u'", lowguid);
             CharacterDatabase.PExecute("DELETE FROM `character_pet` WHERE `owner` = '%u'", lowguid);
             CharacterDatabase.PExecute("DELETE FROM `character_pet_declinedname` WHERE `owner` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_achievement` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_achievement_progress` WHERE `guid` = '%u'", lowguid);
-            CharacterDatabase.PExecute("DELETE FROM `character_equipmentsets` WHERE `guid` = '%u'", lowguid);
             CharacterDatabase.PExecute("DELETE FROM `guild_eventlog` WHERE `PlayerGuid1` = '%u' OR `PlayerGuid2` = '%u'", lowguid, lowguid);
             CharacterDatabase.PExecute("DELETE FROM `guild_bank_eventlog` WHERE `PlayerGuid` = '%u'", lowguid);
             CharacterDatabase.CommitTransaction();
