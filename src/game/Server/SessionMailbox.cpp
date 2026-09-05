@@ -26,6 +26,8 @@
 #include <memory>
 #include <mutex>
 #include "SessionMailbox.h"
+#include "Opcodes.h"
+#include "Log.h"
 
 SessionMailbox::~SessionMailbox()
 {
@@ -36,6 +38,19 @@ bool SessionMailbox::Enqueue(std::unique_ptr<WorldPacket> packet)
 {
     if (!packet)
         return false;
+
+    // Every incoming packet is enqueued here (WorldGateway::OnPacket), and the
+    // opcode indexes opcodeTable[] (size NUM_MSG_TYPES) unchecked at every
+    // dispatch and filter site downstream. An opcode >= NUM_MSG_TYPES is thus an
+    // out-of-bounds read that crashes the world. Custom clients -- Ascension's
+    // sends opcodes up to 0x9D3 -- reach those numbers, so reject them at this
+    // single chokepoint rather than crashing deeper in.
+    if (packet->GetOpcode() >= NUM_MSG_TYPES)
+    {
+        sLog.outError("SessionMailbox: dropped out-of-range opcode 0x%.4X",
+                      packet->GetOpcode());
+        return false;
+    }
 
     std::lock_guard<std::mutex> guard(m_stateLock);
     if (m_closed)
