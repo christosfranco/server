@@ -2158,6 +2158,17 @@ class Player : public Unit
         // guild-log tables are keyed on other columns and stay in DeleteFromDB.
         static char const* const* GetCharacterSideTables(size_t* count);
 
+        // The subset of side tables the FIRST save of SaveToDB (AT_LOGIN_FIRST)
+        // actually writes at create -- the only rows whose max guid can
+        // meaningfully bound the next free guid at boot. `character_account_data`
+        // is deliberately NOT here: it is only written by
+        // WorldSession::SetAccountData keyed on the session's m_GUIDLow, and a
+        // stale/uninitialised m_GUIDLow (see PLAN 15.4 fix in WorldSession)
+        // has in the past dropped heap junk into it. Seeding from that would
+        // drag the whole guid space into the uint32 ceiling. See
+        // ObjectMgr::SetHighestGuids.
+        static char const* const* GetCharacterCreateSideTables(size_t* count);
+
         // Clear stale side-table rows for `lowguid` inside the CURRENT open
         // CharacterDatabase transaction. Returns a space-separated list of
         // table names that actually had rows; empty string when the guid was

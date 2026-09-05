@@ -424,10 +424,10 @@ class WorldSession
         {
             return m_Address;
         }
-        void SetPlayer(Player* plr)
-        {
-            _player = plr;
-        }
+        // Defined in WorldSession.cpp so the call into Player::GetGUIDLow
+        // does not force this header to include the full Player.h.
+        // The cache of m_GUIDLow (PLAN 15.4) lives there.
+        void SetPlayer(Player* plr);
         uint8 Expansion() const { return m_expansion; }
 
         /// Session in auth.queue currently
@@ -1120,7 +1120,17 @@ class WorldSession
         void LogUnexpectedOpcode(WorldPacket* packet, const char* reason);
         void LogUnprocessedTail(WorldPacket* packet);
 
-        uint32 m_GUIDLow;                                   // set logged or recently logout player (while m_playerRecentlyLogout set)
+        // Cached low guid of the session's most recently attached player.
+        // Read by WorldSession::SetAccountData (character_account_data key),
+        // which must be safe to call after LogoutPlayer nulls _player -- and
+        // therefore cannot fall back to _player->GetGUIDLow(). Zero-initialised
+        // here because mangos' pre-PLAN-15.4 code declared this uninitialised
+        // and no constructor assigned it, so its value was whatever heap junk
+        // sat at &m_GUIDLow -- which the account_data path then wrote into
+        // `character_account_data.guid`, inflating the boot seed via
+        // ObjectMgr::SetHighestGuids and pushing every subsequent character's
+        // guid toward the uint32 ceiling. Assigned in SetPlayer() below.
+        uint32 m_GUIDLow = 0;                               // set on SetPlayer(), retained across a recent logout
         Player* _player;
         /// Channel back to the client. Null once the connection is gone; every
         /// call on it is safe after teardown, so callers need only null-check.

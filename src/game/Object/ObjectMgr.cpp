@@ -997,35 +997,85 @@ void ObjectMgr::PackGroupIds()
  */
 void ObjectMgr::SetHighestGuids()
 {
-    // PLAN 15.4. The seed is MAX(guid) over `characters` AND every side
-    // table that keys on the low guid -- not just `characters`. Stock mangos
-    // reads only `characters`, and a guid whose `characters` row is gone but
-    // whose side-table rows survive (from a purge racing the async queue, or
-    // crash-time state) gets handed out again, whereupon the create's queued
-    // INSERTs collide on the primary key and the character never lands. The
-    // create-time sanitiser (Player::SanitiseStaleCharacterRows) also clears
-    // those rows so a race that leaves orphans between boots does not
-    // silently break creation -- but this is the belt: never hand out a
-    // reused-and-poisoned guid in the first place.
-    std::ostringstream charGuidSql;
-    charGuidSql << "SELECT MAX(m) FROM (SELECT MAX(`guid`) AS m FROM `characters`";
+    // PLAN 15.4. Seed the low-guid generator from `characters` and, of the
+    // side tables, only those the first SaveToDB (AT_LOGIN_FIRST) actually
+    // writes at create -- the ones a reused guid would primary-key-collide
+    // on. Two guards make this safe against the earlier regression, where the
+    // seed followed every side table blindly and got dragged into the uint32
+    // ceiling by garbage in `character_account_data`:
+    //
+    // 1. `character_account_data` is excluded (see GetCharacterCreateSideTables):
+    //    it is written by WorldSession::SetAccountData keyed on m_GUIDLow, and
+    //    an uninitialised m_GUIDLow has in the past dropped heap junk (raw
+    //    4-byte values from unrelated allocations) into it. That fix lives in
+    //    WorldSession; this one prevents such junk from ever bounding the seed
+    //    again even if a new leak appears.
+    // 2. A cap of MAX(`characters`.`guid`) + 100000 is applied to each side
+    //    table's MAX(guid). Any row above the cap is treated as garbage,
+    //    ignored for seeding, and named once in the boot log (table + value)
+    //    so `world-characters.log` shows the poison rather than only its
+    //    consequences. 100000 is arbitrary but generous: no legitimate side
+    //    table row on this realm has ever been more than a handful of guids
+    //    ahead of `characters` (the create's own transaction).
+    //
+    // The create-time sanitiser (Player::SanitiseStaleCharacterRows) is still
+    // the guarantee -- a race that leaves orphans between boots cannot fail
+    // a create; this seed just avoids handing out the poisoned guid in the
+    // first place.
+    uint32 charMax = 0;
+    if (QueryResult* base = CharacterDatabase.Query("SELECT MAX(`guid`) FROM `characters`"))
     {
-        size_t sideCount = 0;
-        char const* const* sideTables = Player::GetCharacterSideTables(&sideCount);
-        for (size_t i = 0; i < sideCount; ++i)
-        {
-            charGuidSql << " UNION ALL SELECT MAX(`guid`) FROM `" << sideTables[i] << '`';
-        }
-    }
-    charGuidSql << ") t";
-    QueryResult* result = CharacterDatabase.Query(charGuidSql.str().c_str());
-    if (result)
-    {
-        m_CharGuids.Set((*result)[0].GetUInt32() + 1);
-        delete result;
+        charMax = (*base)[0].GetUInt32();
+        delete base;
     }
 
-    result = WorldDatabase.Query("SELECT MAX(`guid`) FROM `creature`");
+    uint32 seed = charMax;
+    uint32 const cap = charMax + 100000;
+    {
+        size_t sideCount = 0;
+        char const* const* sideTables = Player::GetCharacterCreateSideTables(&sideCount);
+        for (size_t i = 0; i < sideCount; ++i)
+        {
+            char const* table = sideTables[i];
+
+            // Warn (once, at boot) about any guid that looks like garbage,
+            // then take the MAX of what remains under the cap.
+            std::ostringstream garbageSql;
+            garbageSql << "SELECT `guid` FROM `" << table
+                       << "` WHERE `guid` > " << cap
+                       << " ORDER BY `guid` LIMIT 5";
+            if (QueryResult* g = CharacterDatabase.Query(garbageSql.str().c_str()))
+            {
+                do
+                {
+                    Field* f = g->Fetch();
+                    sLog.outError("ObjectMgr::SetHighestGuids: %s.guid=%u > MAX(characters.guid)+100000 (%u); "
+                                  "treating as garbage, not seeding from it (PLAN 15.4). "
+                                  "Sweep with tools/orphan-rows.py --sweep.",
+                                  table, f[0].GetUInt32(), cap);
+                }
+                while (g->NextRow());
+                delete g;
+            }
+
+            std::ostringstream maxSql;
+            maxSql << "SELECT MAX(`guid`) FROM `" << table
+                   << "` WHERE `guid` <= " << cap;
+            if (QueryResult* m = CharacterDatabase.Query(maxSql.str().c_str()))
+            {
+                uint32 v = (*m)[0].GetUInt32();
+                if (v > seed)
+                {
+                    seed = v;
+                }
+                delete m;
+            }
+        }
+    }
+
+    m_CharGuids.Set(seed + 1);
+
+    QueryResult* result = WorldDatabase.Query("SELECT MAX(`guid`) FROM `creature`");
     if (result)
     {
         m_FirstTemporaryCreatureGuid = (*result)[0].GetUInt32() + 1;

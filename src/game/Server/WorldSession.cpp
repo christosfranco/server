@@ -223,6 +223,28 @@ WorldSession::WorldSession(uint32 id, std::shared_ptr<proto::IClientLink> link,
     }
 }
 
+// PLAN 15.4. Cache the session's low guid whenever a Player attaches, so
+// SetAccountData can key `character_account_data` on the real player even
+// after LogoutPlayer nulls _player (STATUS_LOGGEDIN_OR_RECENTLY_LOGGOUT
+// still permits the write). Never clear on detach (plr==nullptr): the last
+// cached value is exactly what the account-data write after logout needs.
+// Before this fix m_GUIDLow was declared uninitialised in WorldSession.h
+// and no path assigned it, so its value was whatever heap bytes sat at
+// &m_GUIDLow when the session was constructed -- which the account-data
+// path then wrote into `character_account_data.guid`, dropping garbage
+// like 335545672 (=0x14000488, a 4-byte fragment of some prior allocation)
+// into a primary-key column whose MAX() the old SetHighestGuids seeded
+// from. That inflated m_CharGuids past 4.2e9 and pushed every new
+// character's guid toward the uint32 ceiling.
+void WorldSession::SetPlayer(Player* plr)
+{
+    _player = plr;
+    if (plr)
+    {
+        m_GUIDLow = plr->GetGUIDLow();
+    }
+}
+
 /// WorldSession destructor
 WorldSession::~WorldSession()
 {

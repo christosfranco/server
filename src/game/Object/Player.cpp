@@ -3058,6 +3058,33 @@ char const* const* Player::GetCharacterSideTables(size_t* count)
     return kCharacterSideTables;
 }
 
+// The tables the FIRST SaveToDB actually inserts into at create -- the ones
+// whose max(guid) can bound the next free guid at boot. Deliberately narrow:
+// `character_account_data` is written elsewhere (WorldSession::SetAccountData
+// keyed on m_GUIDLow) and has been polluted by an uninitialised m_GUIDLow;
+// the tables below are the ones `_SaveActions` / `_SaveSkills` / `_SaveSpells`
+// / `_SaveInventory` / `_SaveGlyphs` / `m_reputationMgr.SaveToDB` /
+// `LoadHomeBind` / `_SaveStats` write on the first save, and are therefore
+// the ones a stock GeneratePlayerLowGuid would primary-key-collide on for a
+// reused low guid. See ObjectMgr::SetHighestGuids (PLAN 15.4).
+static char const* const kCharacterCreateSideTables[] =
+{
+    "character_action",
+    "character_skills",
+    "character_spell",
+    "character_inventory",
+    "character_glyphs",
+    "character_reputation",
+    "character_homebind",
+    "character_stats",
+};
+
+char const* const* Player::GetCharacterCreateSideTables(size_t* count)
+{
+    *count = sizeof(kCharacterCreateSideTables) / sizeof(kCharacterCreateSideTables[0]);
+    return kCharacterCreateSideTables;
+}
+
 // PLAN 15.4. Called from SaveToDB's first-save branch (AT_LOGIN_FIRST set)
 // AFTER BeginTransaction and BEFORE the `characters` insert. If the guid a
 // stock max(guid)+1 handed out is already carrying rows in a side table --
