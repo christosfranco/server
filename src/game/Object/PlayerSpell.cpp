@@ -185,6 +185,24 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
             dependent_set = true;
         }
 
+        // explicitly learned spell known only as dependent, take ownership.
+        // Creation and level grants enter the book as dependent (re-added at
+        // every login, never saved); learning the same id through a CA node,
+        // a trainer or a GM command must promote the entry, or the grant is
+        // visible in-session and on the wire but never reaches
+        // character_spell (PLAN 22.19: 20 of 58 Sun Cleric CA rank spells
+        // dropped exactly this way -- level spells re-granted dependent at
+        // login, CA LearnSpell a silent no-op, _SaveSpells skipping them).
+        if (playerSpell.state != PLAYERSPELL_REMOVED && playerSpell.dependent && !dependent)
+        {
+            playerSpell.dependent = false;
+            if (playerSpell.state != PLAYERSPELL_NEW)
+            {
+                playerSpell.state = PLAYERSPELL_CHANGED;
+            }
+            dependent_set = true;
+        }
+
         // update active state for known spell
         if (playerSpell.active != active && playerSpell.state != PLAYERSPELL_REMOVED && !playerSpell.disabled)
         {

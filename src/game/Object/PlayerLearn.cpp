@@ -157,6 +157,10 @@ void Player::learnDefaultSpells()
     for (PlayerCreateInfoSpells::const_iterator itr = info->spell.begin(); itr != info->spell.end(); ++itr)
     {
         uint32 tspell = *itr;
+        if (HasSpell(tspell))
+        {
+            continue;                                       // already owned (a CA node or earlier grant promoted it): re-granting as dependent would strip the saved entry (PLAN 22.19). Mirrors LearnClassLevelSpells' skip.
+        }
         DEBUG_LOG("PLAYER (Class: %u Race: %u): Adding initial spell, id = %u", uint32(getClass()), uint32(getRace()), tspell);
         if (!IsInWorld())                                   // will send in INITIAL_SPELLS in list anyway at map add
         {
