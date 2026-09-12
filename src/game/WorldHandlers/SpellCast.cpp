@@ -30,6 +30,7 @@
  */
 
 #include "Spell.h"
+#include "AscProbe.h"
 #include "CoaCombatIntegration.h"
 #include "Database/DatabaseEnv.h"
 #include "WorldPacket.h"
@@ -524,6 +525,7 @@ void Spell::cast(bool skipCheck)
         }
     }
 #endif /* ENABLE_ELUNA */
+    if (m_caster->GetTypeId() == TYPEID_PLAYER) { AscProbe::Cast(m_caster->ToPlayer(), this); }
 
     if (!m_coaTargetsPrepared) { FillTargetMap(); }
 

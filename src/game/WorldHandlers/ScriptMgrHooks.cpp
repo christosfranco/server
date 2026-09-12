@@ -29,6 +29,7 @@
  */
 
 #include "ScriptMgr.h"
+#include "AscProbe.h"
 #include "Creature.h"
 #include "GameObject.h"
 #include "Player.h"
@@ -107,6 +108,7 @@ InstanceData* ScriptMgr::CreateInstanceData(Map* pMap)
  */
 bool ScriptMgr::OnGossipHello(Player* pPlayer, Creature* pCreature)
 {
+    AscProbe::GossipHello(pPlayer, pCreature);
     // Used by Eluna
 #ifdef ENABLE_ELUNA
     if (Eluna* e = pPlayer->GetEluna())
@@ -185,6 +187,7 @@ bool ScriptMgr::OnGossipHello(Player* pPlayer, Item* pItem)
  */
 bool ScriptMgr::OnGossipSelect(Player* pPlayer, Creature* pCreature, uint32 sender, uint32 action, const char* code)
 {
+    AscProbe::GossipSelect(pPlayer, pCreature, sender, action);
 #ifdef ENABLE_ELUNA
     if (Eluna* e = pPlayer->GetEluna())
     {
@@ -308,6 +311,7 @@ bool ScriptMgr::OnGossipSelect(Player* pPlayer, Item* pItem, uint32 sender, uint
  */
 bool ScriptMgr::OnQuestAccept(Player* pPlayer, Creature* pCreature, Quest const* pQuest)
 {
+    AscProbe::QuestAccept(pPlayer, pCreature, pQuest);
     // Used by Eluna
 #ifdef ENABLE_ELUNA
     if (Eluna* e = pPlayer->GetEluna())
@@ -393,6 +397,7 @@ bool ScriptMgr::OnQuestAccept(Player* pPlayer, Item* pItem, Quest const* pQuest)
  */
 bool ScriptMgr::OnQuestRewarded(Player* pPlayer, Creature* pCreature, Quest const* pQuest, uint32 reward)
 {
+    AscProbe::QuestReward(pPlayer, pCreature, pQuest, reward);
     // Used by Eluna
 #ifdef ENABLE_ELUNA
     if (Eluna* e = pPlayer->GetEluna())

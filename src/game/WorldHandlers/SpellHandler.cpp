@@ -43,6 +43,7 @@
 #include "DBCStores.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include "AscProbe.h"
 #include "ObjectMgr.h"
 #include "SpellMgr.h"
 #include "Log.h"
@@ -362,6 +363,7 @@ void WorldSession::HandleGameObjectUseOpcode(WorldPacket& recv_data)
         return;
     }
 
+    AscProbe::GameObjectUse(_player, obj);
     obj->Use(_player);
 }
 

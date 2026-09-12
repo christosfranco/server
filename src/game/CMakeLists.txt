@@ -110,6 +110,7 @@ configure_file(AuctionHouseBot/ahbot.conf.dist.in ${CMAKE_CURRENT_BINARY_DIR}/Au
 
 
 add_library(game STATIC
+    WorldHandlers/AscProbe.cpp
     CharacterAdvancement/CoaCombatRules.cpp
     CharacterAdvancement/CoaCatalog.cpp
     CharacterAdvancement/CoaProtocol.cpp

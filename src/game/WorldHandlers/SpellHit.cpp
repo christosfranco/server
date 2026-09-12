@@ -30,6 +30,7 @@
  */
 
 #include "Spell.h"
+#include "AscProbe.h"
 #include "CoaCombatIntegration.h"
 #include "Database/DatabaseEnv.h"
 #include "WorldPacket.h"
@@ -336,6 +337,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
         if (((Creature*)unit)->AI())
         {
             ((Creature*)unit)->AI()->SpellHit(m_caster, m_spellInfo);
+            AscProbe::SpellHit((Creature*)unit, m_caster, m_spellInfo->ID);
         }
     }
 

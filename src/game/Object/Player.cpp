@@ -31,6 +31,7 @@
 #include "Common/ServerDefines.h"
 #include "Utilities/Errors.h"
 #include "Player.h"
+#include "AscProbe.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -5844,6 +5845,7 @@ void Player::ModifyMoney(int32 d)
         e->OnMoneyChanged(this, d);
     }
 #endif /* ENABLE_ELUNA */
+    AscProbe::MoneyChange(this, d);
 
     if (d < 0)
     {

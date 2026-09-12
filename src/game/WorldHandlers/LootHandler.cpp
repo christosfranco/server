@@ -51,6 +51,7 @@
 #include "PlayerRegistry.h"
 #include "ObjectGuid.h"
 #include "WorldSession.h"
+#include "AscProbe.h"
 #include "LootMgr.h"
 #include "Object.h"
 #include "Group.h"
@@ -212,6 +213,7 @@ void WorldSession::HandleAutostoreLootItemOpcode(WorldPacket& recv_data)
             e->OnLootItem(player, newitem, item->count, lguid);
         }
 #endif /* ENABLE_ELUNA */
+        AscProbe::LootItem(player, newitem, item->count);
 
         player->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_LOOT_ITEM, item->itemid, item->count);
         player->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_LOOT_TYPE, loot->loot_type, item->count);
@@ -740,6 +742,7 @@ void WorldSession::HandleLootMasterGiveOpcode(WorldPacket& recv_data)
         e->OnLootItem(target, newitem, item.count, lootguid);
     }
 #endif /* ENABLE_ELUNA */
+        AscProbe::LootItem(target, newitem, item.count);
 
     // mark as looted
     item.count = 0;

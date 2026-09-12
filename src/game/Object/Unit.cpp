@@ -32,6 +32,7 @@
 #include <algorithm>
 #include "Utilities/Errors.h"
 #include "Unit.h"
+#include "AscProbe.h"
 #include "PowerRules.h"
 #include "Log.h"
 #include "Opcodes.h"
@@ -811,6 +812,7 @@ void Unit::DealDamageMods(Unit* pVictim, uint32& damage, uint32* absorb)
     {
         ((Creature*)pVictim)->AI()->DamageTaken(this, damage);
     }
+    if (pVictim->GetTypeId() == TYPEID_UNIT) { AscProbe::Damage((Creature*)pVictim, this, damage); }
 
     if (absorb && originalDamage > damage)
     {
@@ -1393,6 +1395,7 @@ void Unit::JustKilledCreature(Creature* victim, Player* responsiblePlayer)
     {
         victim->AI()->JustDied(this);
     }
+    AscProbe::Death(victim, this);
 
     // Inform Owner
     Unit* pOwner = victim->GetCharmerOrOwner();
@@ -1434,6 +1437,7 @@ void Unit::JustKilledCreature(Creature* victim, Player* responsiblePlayer)
             e->OnCreatureKill(responsiblePlayer, victim);
         }
 #endif /* ENABLE_ELUNA */
+        AscProbe::Kill(responsiblePlayer, victim);
         }
 
     // Notify the outdoor pvp script
@@ -4218,6 +4222,7 @@ void Unit::SetInCombatState(bool PvP, Unit* enemy)
         {
             pCreature->AI()->EnterCombat(enemy);
         }
+        AscProbe::EnterCombat(pCreature, enemy);
 
         // Some bosses are set into combat with zone
         if (GetMap()->IsDungeon() && (pCreature->GetCreatureInfo()->ExtraFlags & CREATURE_FLAG_EXTRA_AGGRO_ZONE) && enemy && enemy->IsControlledByPlayer())

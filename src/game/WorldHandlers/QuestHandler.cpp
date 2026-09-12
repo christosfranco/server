@@ -47,6 +47,7 @@
 #include "Log.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include "AscProbe.h"
 #include "Opcodes.h"
 #include "World.h"
 #include "ObjectMgr.h"
@@ -485,6 +486,7 @@ void WorldSession::HandleQuestLogRemoveQuest(WorldPacket& recv_data)
                 e->OnQuestAbandon(_player, quest);
             }
 #endif /* ENABLE_ELUNA */
+            AscProbe::QuestAbandon(_player, quest);
         }
 
         _player->SetQuestSlot(slot, 0);

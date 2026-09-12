@@ -60,6 +60,7 @@
 #include <stdexcept>
 #include "Database/DatabaseEnv.h"
 #include "Config/Config.h"
+#include "AscProbe.h"
 #include "Platform/Define.h"
 #include "SystemConfig.h"
 #include "Log.h"
@@ -718,6 +719,7 @@ void World::SetInitialWorldSettings()
 
     sLog.outString("Loading Class Level Spells...");
     sObjectMgr.LoadClassLevelSpells();
+    AscProbe::Init();
     if (getConfig(CONFIG_BOOL_ASCENSION_STOCK_AUTH_COMPATIBILITY))
     {
         try

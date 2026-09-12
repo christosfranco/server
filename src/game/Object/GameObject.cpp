@@ -28,6 +28,7 @@
 #include "PlayerRegistry.h"
 #include "ObjectLookup.h"
 #include "GameObject.h"
+#include "AscProbe.h"
 #include "GameObjectModel.h"
 #include "Geometry/Quat.h"
 #include "QuestDef.h"
@@ -1277,6 +1278,7 @@ void GameObject::SetLootState(LootState state)
         e->OnLootStateChanged(this, state);
     }
 #endif /* ENABLE_ELUNA */
+    AscProbe::LootStateChanged(this, state);
     UpdateCollisionState();
 }
 

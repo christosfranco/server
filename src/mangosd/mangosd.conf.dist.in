@@ -137,6 +137,10 @@ Ascension.StockAuthCompatibility = 0
 # Independent reviewed SHA256 of the exact TSV, not a digest derived at startup.
 Ascension.CoA.CatalogPath = ""
 Ascension.CoA.CatalogSHA256 = ""
+# World-event probe (the C++ successor of the Eluna spellprobe): one JSON object
+# per cast/hit/damage/death/kill/aggro and per loot/quest/gossip/gameobject
+# interaction, appended to this file. Empty disables. Read by the gates.
+Ascension.Probe.Path = ""
 Ascension.RequiredClientUpdate = ""
 Ascension.KnownAddons = "Ascension_Collections:1,AscensionUI:1,Ascension_TalentUI:1,Ascension_CoATalents:1,Ascension_Warmode:1,Ascension_NamePlates:1,Ascension_NewPlayerExperience:1,Ascension_MythicPlus:1,Ascension_Manastorm:1,Ascension_VanityCollection:1,Ascension_AppearanceUI:1"
 DataDir                      = "@CONF_INSTALL_DIR@"
