@@ -34,11 +34,20 @@ namespace
             }
             for (unsigned effect = 0; effect < MAX_EFFECT_INDEX; ++effect)
             {
+                uint32 triggered = spell->EffectTriggerSpell[effect];
+                if (!triggered) { continue; }
+                // Missing triggered targets are not fatal: the catalog compiler
+                // may pin an entry whose rank spell references a DBC row this
+                // snapshot lacks (class 32 Runemaster entry 4655 rank spell
+                // 806711 -> 725391 -> 7015, absent on this staged Spell.dbc).
+                // Skip the recursive add; the effect will not fire natively
+                // either because Spell::EffectTriggerSpell also LookupEntry's it.
+                if (!sSpellStore.LookupEntry(triggered)) { continue; }
                 if (spell->Effect[effect] == SPELL_EFFECT_LEARN_SPELL)
                 {
-                    links.learned.insert(spell->EffectTriggerSpell[effect]);
+                    links.learned.insert(triggered);
                 }
-                links.triggered.insert(spell->EffectTriggerSpell[effect]);
+                links.triggered.insert(triggered);
             }
             return links;
         }, auras);
