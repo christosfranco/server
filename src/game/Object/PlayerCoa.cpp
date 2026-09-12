@@ -344,6 +344,24 @@ bool Player::IsCoaDefaultSpell(uint32 spell) const
     {
         return true;
     }
+    // [C] 2026-09-12 (ascender-server plan native-coa 23.4): on this realm
+    // playercreateinfo_spell for classes 12-32 is the authored starting
+    // contract -- tools/make-classes.py's donor BASELINE (weapon and armour
+    // skills, Dodge, Detect, Opening, Honorless Target, racials, languages)
+    // with the donor's class abilities already stripped -- so every row is a
+    // default the character keeps and the save sweep must not manage. Main's
+    // category filter below guarded against a stock donor's ability list this
+    // realm's generator never writes; it stays for spells that are not rows.
+    if (PlayerInfo const* info = sObjectMgr.GetPlayerInfo(getRace(), getClass()))
+    {
+        for (uint32 row : info->spell)
+        {
+            if (row == spell)
+            {
+                return true;
+            }
+        }
+    }
     auto info = sSpellStore.LookupEntry(spell);
     if (!info)
     {
