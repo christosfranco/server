@@ -28,7 +28,11 @@ void World::InitializeCoaStarters()
         }
     }
     std::vector<coa::StarterItem> items;
-    if (sItemStorage.GetMaxEntry() > 5000000)
+    // PLAN 23.2: Ascension's Item.dbc carries 38,898 items above 5,000,000
+    // (max id 9,200,851) and the world DB mirrors ids from it (8210210), so
+    // main's 5,000,000 guard, written against stock's id space, refused to
+    // boot this realm. 16 Mi is the DBC index ceiling the core uses elsewhere.
+    if (sItemStorage.GetMaxEntry() > 16777216)
     {
         throw std::runtime_error("CoA starter item-index bound exceeded");
     }
