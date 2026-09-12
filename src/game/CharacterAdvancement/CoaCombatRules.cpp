@@ -9,12 +9,13 @@ namespace coa::combat
     namespace
     {
         // Small authored policy bindings. Full native tuples/provenance stay private.
+        constexpr uint32_t InnerDemonDurationMs = 30000;
         constexpr Resource Resources[] = {
             {500149, 27, 20, 804584, false}, {500706, 25, 100, 0, false},
             {500906, 17, 6, 0, false}, {557325, 21, 20, 0, false},
             {560414, 30, 1, 0, false}, {561136, 13, 5, 0, false},
             {570131, 23, 10, 0, false}, {680441, 31, 15, 0, true},
-            {680687, 20, 10, 0, false}, {680854, 29, 15, 0, false},
+            {680687, 20, 10, 0, false}, {680854, 29, 15, 0, false}, {706613, 20, 10, 0, false},
             {707133, 23, 15, 0, false}, {800058, 14, 6, 0, false},
             {801324, 30, 8, 0, false}, {801816, 28, 100, 0, false},
             {803102, 16, 100, 0, false}, {804068, 15, 8, 0, false},
@@ -200,6 +201,10 @@ namespace coa::combat
         {
             return c.known && c.known(c.data, spell);
         }
+        bool SelfAura(Context const& c, uint32_t spell)
+        {
+            return c.selfAura && c.selfAura(c.data, spell);
+        }
         bool Authorized(Context const& c, uint32_t spell, uint32_t resource = 0)
         {
             return c.authorized && c.authorized(c.data, spell, resource);
@@ -368,6 +373,28 @@ namespace coa::combat
             {
                 SetMarker(c, s, 803031, Count(s, 500363, c.actor) >= 3);
             }
+            // THE DEMON WITHIN (class_resources.lua [14].at_cap, PLAN 22.4c).
+            // 800222 is known but never cast; at 6 Felfury the orb is
+            // consumed and 804216 Inner Demon applied. AddAura semantics, not
+            // a cast: 804216 carries CasterAuraSpell=800058, so casting it
+            // after consuming the orb would die on CheckCast (the Sun
+            // Cleric Dawn ordering trap). Idempotent: below cap, requires
+            // unknown, or buff already up is a no-op; while the buff is up a
+            // further capping is left alone.
+            if (c.playerClass == 14 && Count(s, 800058, c.actor) >= 6 &&
+                Known(c, 800222) && !Count(s, 804216, c.actor))
+            {
+                if (!Native(c, 804216).exists) { throw Status::Failed; }
+                Delta(c, s, 800058, 800058, c.actor, -Count(s, 800058, c.actor), true);
+                auto& demon = Cell(s, 804216, c.actor);
+                demon.stacks = 1;
+                // [C] stand-in, 22.10: 804216 DurationIndex is 0
+                // (permanent); Ascension resolves $804216d server-side. The
+                // stock Metamorphosis precedent (warlock 47241,
+                // DurationIndex 9 = 30,000 ms) stands in until the live
+                // capture measures Ascension's number.
+                demon.expiresMs = c.nowMs + InnerDemonDurationMs;
+            }
             if (c.playerClass == 25 && Count(s, 500706, c.actor) >= 100 &&
                 !Known(c, 805120) && !Count(s, 803061, c.actor))
             {
@@ -406,7 +433,8 @@ namespace coa::combat
                 auto const& a = s.auras.values[i];
                 auto* r = FindResource(a.spell);
                 bool marker = a.spell == 802938 || a.spell == 802939 || a.spell == 804586 ||
-                    a.spell == 704396 || a.spell == 803031 || a.spell == 803061 || a.spell == 807440;
+                    a.spell == 704396 || a.spell == 803031 || a.spell == 803061 || a.spell == 807440 ||
+                    a.spell == 804216;
                 if ((!r && !marker) || a.caster != s.actor || !a.target.guid ||
                     !a.target.generation || a.target.instance != s.actor.instance ||
                     a.stacks < 0 || a.charges < 0 || a.charges > 10 ||
@@ -473,6 +501,40 @@ namespace coa::combat
     }
     bool operator!=(Identity const& a, Identity const& b) { return !(a == b); }
 
+    Generator const* FindGenerator(uint32_t spell)
+    {
+        // class_resources.lua CLASSES generators, same (spell, class,
+        // resource, amount, gate). Felsworn 801901 is deliberately absent:
+        // its third trigger effect fires 800058 itself and the core applies
+        // that trigger natively, so a rule here would double every cast.
+        // 804097/804098 are the Vow periodic covers (+2/+1 Solar Power).
+        // Flash is 500144 plus ranks 502352-502358 (+1 each).
+        static constexpr Generator Generators[] = {
+            {804097, 27, 500149, 2, GeneratorGate::None, 0},
+            {500144, 27, 500149, 1, GeneratorGate::None, 0},
+            {502352, 27, 500149, 1, GeneratorGate::None, 0},
+            {502353, 27, 500149, 1, GeneratorGate::None, 0},
+            {502354, 27, 500149, 1, GeneratorGate::None, 0},
+            {502355, 27, 500149, 1, GeneratorGate::None, 0},
+            {502356, 27, 500149, 1, GeneratorGate::None, 0},
+            {502357, 27, 500149, 1, GeneratorGate::None, 0},
+            {502358, 27, 500149, 1, GeneratorGate::None, 0},
+            {800232, 27, 500149, 2, GeneratorGate::None, 0},
+            {800611, 27, 500149, 1, GeneratorGate::SelfAura, 680313},
+            {804020, 16, 803102, 20, GeneratorGate::Known, 500040},
+            {500125, 20, 706613, 1, GeneratorGate::KnownOrSelfAura, 500107},
+            {800790, 24, 807389, 20, GeneratorGate::None, 0},
+            {801016, 17, 500906, 2, GeneratorGate::None, 0},
+            {500074, 21, 804329, 1, GeneratorGate::None, 0},
+            {500720, 25, 500706, 20, GeneratorGate::None, 0},
+            {500357, 30, 805077, 1, GeneratorGate::None, 0},
+        };
+        for (auto const& g : Generators)
+        {
+            if (g.spell == spell) { return &g; }
+        }
+        return nullptr;
+    }
     Binding const* FindBinding(uint32_t spell, uint32_t slot, uint32_t effect)
     {
         for (auto const& b : Bindings)
@@ -500,11 +562,12 @@ namespace coa::combat
     bool ControlledAura(uint32_t spell)
     {
         return FindResource(spell) || spell == 802938 || spell == 802939 || spell == 804586 ||
-            spell == 704396 || spell == 807440 || spell == 803061 || spell == 803031;
+            spell == 704396 || spell == 807440 || spell == 803061 || spell == 803031 || spell == 804216;
     }
     bool PolicyResourceEdge(uint32_t source, uint32_t resource)
     {
         if (source == resource && FindResource(resource)) { return true; }
+        if (auto* g = FindGenerator(source)) { return g->resource == resource; }
         if (source == 804584 && resource == 500149) { return true; }
         if (source == 300755 && (resource == 807389 || resource == 807533)) { return true; }
         if (source == 807389 && resource == 807533) { return true; }
@@ -669,6 +732,31 @@ namespace coa::combat
                     dawn.expiresMs = expires;
                     s.dawnReadyMs = c.nowMs;
                     p.m_suppressSlots = 7;
+                }
+                else if (e.kind == EventKind::Cast && FindGenerator(e.spell))
+                {
+                    // Tooltip-only generators (class_resources.lua): the cast
+                    // carries no bound 175/178/183 slot, so the adapter emits
+                    // the Cast with empty effects and every native slot
+                    // executes normally (suppression came from collection).
+                    // Same numbers the Lua asserted, including the Dawn block
+                    // (Delta refuses 500149 gains while 807440 is up) and the
+                    // Heat soft cap (whole-hundreds convert to Embers).
+                    auto const* g = FindGenerator(e.spell);
+                    if (g->playerClass != c.playerClass) { throw Status::Unauthorized; }
+                    if (e.effects.size || e.target != c.actor) { throw Status::Invalid; }
+                    bool gated = false;
+                    switch (g->gate)
+                    {
+                        case GeneratorGate::None: gated = true; break;
+                        case GeneratorGate::Known: gated = Known(c, g->gateSpell); break;
+                        case GeneratorGate::SelfAura: gated = SelfAura(c, g->gateSpell); break;
+                        case GeneratorGate::KnownOrSelfAura:
+                            gated = Known(c, g->gateSpell) || SelfAura(c, g->gateSpell);
+                            break;
+                    }
+                    if (!gated) { throw Status::Unauthorized; }
+                    Delta(c, s, e.spell, g->resource, c.actor, g->amount, false);
                 }
                 else if (e.kind == EventKind::Cast || e.kind == EventKind::CapModifier)
                 {

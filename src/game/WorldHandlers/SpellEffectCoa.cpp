@@ -21,7 +21,8 @@ namespace
     bool NativeNeedsRules(SpellEntry const* info, uint32 depth = 0)
     {
         if (!info) { return false; }
-        if (HasBindings(info->ID) || FindResource(info->ID) || info->ID == 804584 || CoalescedTimer(info->ID)) { return true; }
+        if (HasBindings(info->ID) || FindResource(info->ID) || FindGenerator(info->ID) ||
+            info->ID == 804584 || CoalescedTimer(info->ID)) { return true; }
         for (uint32 i = 0; i < MAX_EFFECT_INDEX; ++i)
         {
             if (info->Effect[i] >= TOTAL_SPELL_EFFECTS ||
@@ -100,6 +101,19 @@ SpellCastResult Spell::CollectCoaCombatEvents(std::vector<Event>& events, uint32
         event.targetPolicy = Target::Self;
         events.push_back(event);
         m_coaSuppressSlots = 7;
+        return SPELL_CAST_OK;
+    }
+    // Tooltip-only resource generators (class_resources.lua, no bound
+    // 175/178/183 slot): the Cast carries empty effects and every native
+    // slot executes normally. 804097 rides effect 175 past stock
+    // TOTAL_SPELL_EFFECTS, so its slot is suppressed and the rule covers
+    // the +2 instead (the 804098 binding is the +1 precedent).
+    if (FindGenerator(m_spellInfo->ID))
+    {
+        event.target = event.source;
+        event.targetPolicy = Target::Self;
+        events.push_back(event);
+        m_coaSuppressSlots = m_spellInfo->ID == 804097 ? 1 : 0;
         return SPELL_CAST_OK;
     }
     // A native aura application is one resource reward, not a replay of its

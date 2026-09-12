@@ -428,3 +428,33 @@ TEST(Coa_native_all_classes_specs_levels_and_300755_marker)
         }
     }
 }
+
+TEST(Coa_taking_vows_unlocks_the_seven_vow_buffs)
+{
+    // Sun Cleric node 34025 "Spiteful" grants Taking Vows 300331; the build
+    // then carries the seven Vow self-buffs, which have no other grant path
+    // (ca_talents.lua VOW_SPELLS, same ids).
+    std::ostringstream extra;
+    extra << "CLASS\t27\t16\nBASESPELL\t27\t90027\t1\t1\n";
+    for (unsigned l = 1; l <= 60; ++l) { extra << "BUDGET\t27\t" << l << "\t5\t0\n"; }
+    extra << "SPEC\t70\t27\t34026\t34027\n"
+             "ENTRY\t34026\t27\t1\t0\t10\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\n"
+             "SPELL\t34026\t1\t340261\t1\t10\nOWNER\t34026\t70\n"
+             "ENTRY\t34027\t27\t1\t0\t10\t1\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\n"
+             "SPELL\t34027\t1\t340271\t1\t10\nOWNER\t34027\t70\n"
+             "ENTRY\t34025\t27\t1\t0\t1\t1\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\n"
+             "SPELL\t34025\t1\t300331\t1\t1\n";
+    auto c = Catalog(extra.str());
+    auto plain = c->Authorize(27, 10, 70, {});
+    CHECK(!plain.spells.count(300331));
+    for (uint32_t vow : {803489u, 803491u, 803494u, 803719u, 807435u, 807547u, 807749u})
+    {
+        CHECK(!plain.spells.count(vow));
+    }
+    auto vowed = c->Authorize(27, 10, 70, {{34025, 1}});
+    CHECK(vowed.spells.count(300331));
+    for (uint32_t vow : {803489u, 803491u, 803494u, 803719u, 807435u, 807547u, 807749u})
+    {
+        CHECK(vowed.spells.count(vow));
+    }
+}

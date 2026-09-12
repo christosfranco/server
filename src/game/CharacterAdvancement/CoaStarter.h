@@ -63,6 +63,9 @@ namespace coa
     float StarterManaRegenFloor(uint32_t baseMana);
     StarterPlan PlanStarter(StarterSpell const& spell, uint32_t playerClass, uint32_t race,
         std::vector<StarterItem> items, std::vector<StarterProficiency> const& proficiencies);
+    // The full per-class starting book (research/ascension-reference, 21.1
+    // capture). Empty for classes without a native book (stock, Hero 10).
+    std::set<uint32_t> StarterSpells(uint32_t playerClass);
     // Same equipment/resource postcondition used by real Player creation and tests.
     bool StarterReady(StarterPlan const& plan, std::array<StarterItem, 4> const& equipped,
         std::set<uint32_t> const& skills, uint32_t weaponProficiency, uint32_t armorProficiency,

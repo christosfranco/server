@@ -2412,6 +2412,7 @@ class Player : public Unit
         uint64 NextCoaCastId() { return ++m_coaCastId; }
         void RefreshCoaCombatIntellect();
         void RefreshCoaCombatAuthority();
+        void ApplyCoaStanceRule(uint32 spell, bool preActive);
         friend class CoaCombatTransaction;
         void UpdateCoaPowerCaps();
         bool PrepareCoaStarterInfrastructure();

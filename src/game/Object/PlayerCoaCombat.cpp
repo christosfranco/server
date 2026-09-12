@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "CoaCombatIntegration.h"
+#include "CoaStanceRules.h"
 #include "Player.h"
 #include "Spell.h"
 #include "SpellAuras.h"
@@ -72,7 +73,9 @@ bool Player::IsCoaCombatAuthorized(uint32 source, uint32 resource) const
     if (!IsCoaManaged() || !m_coaReady || m_coaFailed) { return false; }
     bool owned = m_coaCombatSpells.count(source) ||
         (source == 500728 && m_coaCombatSpells.count(500706)) ||
-        (source == 804585 && m_coaCombatSpells.count(500149));
+        (source == 804585 && m_coaCombatSpells.count(500149)) ||
+        (source == 804097 && m_coaCombatSpells.count(500149)) ||
+        (source == 804098 && m_coaCombatSpells.count(500149));
     if (source == 300755 || source == 900755) { owned = KnowsCoaCombatSpell(300755); }
     if (!owned) { return false; }
     return !resource || PolicyResourceEdge(source, resource);
@@ -97,6 +100,11 @@ Context Player::BuildCoaCombatContext() const
     c.known = [](void const* data, uint32 spell)
     {
         return static_cast<Player const*>(data)->KnowsCoaCombatSpell(spell);
+    };
+    c.selfAura = [](void const* data, uint32 spell)
+    {
+        auto const* player = static_cast<Player const*>(data);
+        return player->GetSpellAuraHolder(spell, player->GetObjectGuid()) != nullptr;
     };
     c.authorized = [](void const* data, uint32 source, uint32 resource)
     {
@@ -289,6 +297,24 @@ void Player::RefreshCoaCombatIntellect()
     e.kind = EventKind::Refresh;
     OnCoaCombatEvent(e);
     m_coaCombatRefreshingStat = false;
+}
+
+void Player::ApplyCoaStanceRule(uint32 spell, bool preActive)
+{
+    // class_resources.lua stance exclusivity, same sets and semantics: the
+    // just-cast member applies through the normal path on this tick, every
+    // other member leaves synchronously, and a recast of the active member
+    // toggles it off. Runs after the cast's own effects (all members are
+    // instant), so unlike the pre-effects Lua hook no delayed poll is needed.
+    // Deliberately not CoA-managed-gated: the Lua applied to any caster and
+    // no stock class can know these ids.
+    auto const* set = coa::StanceSetForSpell(spell);
+    if (!set) { return; }
+    for (std::size_t i = 0; i < set->size; ++i)
+    {
+        if (set->members[i] != spell && HasAura(set->members[i])) { RemoveAurasDueToSpell(set->members[i]); }
+    }
+    if (preActive) { RemoveAurasDueToSpell(spell); }
 }
 
 CoaCombatTransaction::CoaCombatTransaction(Player& owner, Event event) : m_owner(owner), m_events{event} {}

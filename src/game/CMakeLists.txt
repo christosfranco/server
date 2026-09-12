@@ -118,6 +118,7 @@ add_library(game STATIC
     CharacterAdvancement/CoaStore.cpp
     CharacterAdvancement/CoaStarter.cpp
     CharacterAdvancement/CoaStarterData.cpp
+    CharacterAdvancement/CoaStarterSpells.cpp
     ${SRC_GRP_AHBOT}
     ${SRC_GRP_BATTLEGROUND}
     ${SRC_GRP_CHAT_COMMANDS}

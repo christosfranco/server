@@ -419,6 +419,21 @@ namespace coa
         {
             build.spells.insert(EntrySpell(pair.first, pair.second, level).spell);
         }
+        // Taking Vows (300331), granted by Sun Cleric node 34025
+        // "Spiteful" (ca_talents.lua). Learning it unlocks the seven Vow
+        // self-buffs, which have no other grant path on this realm (not
+        // starting, not level-up, no other entry references them):
+        // 803489 Radiance, 803491 Dawn, 803494 Benediction, 803719 Grace,
+        // 807435 Eclipse, 807547 Light, 807749 Valkyr. Vow exclusivity
+        // stays out (PLAN 22.22); the periodic +2/+1 covers live in the
+        // combat rules.
+        if (build.spells.count(300331))
+        {
+            for (uint32_t vow : {803489u, 803491u, 803494u, 803719u, 807435u, 807547u, 807749u})
+            {
+                build.spells.insert(vow);
+            }
+        }
         build.spells.insert(BaseSpell(playerClass, level).spell);
         return build;
     }

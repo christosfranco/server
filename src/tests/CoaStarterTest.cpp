@@ -197,3 +197,29 @@ TEST(Coa_proficiency_loader_retains_native_exclusion_columns)
     entry.ExcludeRace = 1; entry.ExcludeClass = 2048;
     CHECK_EQ(entry.ExcludeRace, 1u); CHECK_EQ(entry.ExcludeClass, 2048u);
 }
+
+TEST(Coa_starter_book_matches_the_reference_starting_set)
+{
+    // research/ascension-reference/<class>.json starting_spells[], verbatim:
+    // per-class counts plus the combat-signature ids. Stock classes and Hero
+    // 10 have no native book.
+    struct Expect { uint32_t cls, count; std::vector<uint32_t> ids; };
+    for (auto const& row : {
+        Expect{12, 6, {801576}}, Expect{13, 4, {500017}}, Expect{14, 4, {800222, 801901}},
+        Expect{15, 11, {500082, 804657, 803165}}, Expect{16, 5, {804020}}, Expect{17, 5, {801016}},
+        Expect{18, 9, {500155}}, Expect{19, 7, {704572}}, Expect{20, 4, {500125, 800486}},
+        Expect{21, 8, {500074, 805278, 803165}}, Expect{22, 4, {800852}}, Expect{23, 4, {500970}},
+        Expect{24, 5, {800790, 805650}}, Expect{25, 9, {500720}}, Expect{26, 10, {800510, 674}},
+        Expect{27, 6, {800611, 800764}}, Expect{28, 8, {500234}}, Expect{29, 6, {800869}},
+        Expect{30, 7, {500357, 805684}}, Expect{31, 8, {500939, 800093}}, Expect{32, 7, {802202}},
+    })
+    {
+        auto book = coa::StarterSpells(row.cls);
+        CHECK_EQ(book.size(), size_t(row.count));
+        for (auto id : row.ids) { CHECK(book.count(id)); }
+    }
+    for (uint32_t cls : {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u, 0u, 33u})
+    {
+        CHECK(coa::StarterSpells(cls).empty());
+    }
+}

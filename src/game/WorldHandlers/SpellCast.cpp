@@ -32,6 +32,7 @@
 #include "Spell.h"
 #include "AscProbe.h"
 #include "CoaCombatIntegration.h"
+#include "CoaStanceRules.h"
 #include "Database/DatabaseEnv.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -604,6 +605,12 @@ void Spell::cast(bool skipCheck)
  */
 void Spell::handle_immediate()
 {
+    // Exclusive-stance pre-state, read before the cast's own effects apply
+    // (all members are instant self-buffs; the just-cast member lands during
+    // DoAllEffectOnTarget below and the rule enforces after it).
+    Player* stanceOwner = m_caster->GetTypeId() == TYPEID_PLAYER ? m_caster->ToPlayer() : nullptr;
+    auto const* stanceSet = stanceOwner ? coa::StanceSetForSpell(m_spellInfo->ID) : nullptr;
+    bool stanceActive = stanceSet && stanceOwner->HasAura(m_spellInfo->ID);
     // process immediate effects (items, ground, etc.) also initialize some variables
     _handle_immediate_phase();
 
@@ -623,6 +630,8 @@ void Spell::handle_immediate()
     {
         DoAllEffectOnTarget(&(*ihit));
     }
+
+    if (stanceSet) { stanceOwner->ApplyCoaStanceRule(m_spellInfo->ID, stanceActive); }
 
     // spell is finished, perform some last features of the spell here
     _handle_finish_phase();

@@ -16,6 +16,7 @@ namespace
         Identity enemy{200, 7, 1}, friendly{300, 7, 1};
         std::set<uint32_t> known{300755, 804584, 807693, 1001};
         std::set<uint32_t> missing;
+        std::set<uint32_t> selfAuras;
         std::set<std::pair<uint32_t, uint32_t>> edges;
         std::map<uint32_t, int32_t> durations{{807440, 60000}, {803061, 10000}, {680441, 20000}, {804301, 10000}};
         bool targetExists = true, targetAlive = true, targetRange = true;
@@ -32,6 +33,10 @@ namespace
             context.known = [](void const* data, uint32_t spell)
             {
                 return static_cast<Fixture const*>(data)->known.count(spell) != 0;
+            };
+            context.selfAura = [](void const* data, uint32_t spell)
+            {
+                return static_cast<Fixture const*>(data)->selfAuras.count(spell) != 0;
             };
             context.authorized = [](void const* data, uint32_t spell, uint32_t currency)
             {
@@ -1020,4 +1025,142 @@ TEST(CoaCombat_destination_refuses_nan_cross_frame_duplicate_recipients_and_stal
     f.destinationAllowed = false; f.context.nowMs = 100;
     CHECK_EQ(f.Apply(f.Input(EventKind::Tick)).Casts().size, 0u);
     CHECK_EQ(f.state.pending.size, 0u);
+}
+
+TEST(CoaCombat_lua_port_sun_granters_amounts_and_gavel_guard)
+{
+    // class_resources.lua Sun Cleric granters: 804097 +2 (Vow periodic
+    // cover), Flash 500144 +1, Spears of Light 800232 +2, Gavel 800611 +1
+    // only while Sunwalker's Grace 680313 is on the player.
+    Fixture f(27);
+    f.Approve(804097, {500149});
+    f.Approve(500144, {500149});
+    f.Approve(800232, {500149});
+    f.Approve(800611, {500149});
+    f.Apply(f.Input(EventKind::Cast, 804097));
+    CHECK_EQ(f.Value(500149), 2);
+    f.Apply(f.Input(EventKind::Cast, 500144));
+    CHECK_EQ(f.Value(500149), 3);
+    f.Apply(f.Input(EventKind::Cast, 800232));
+    CHECK_EQ(f.Value(500149), 5);
+    CHECK_EQ(f.Value(802938), 1);
+    CHECK(Evaluate(f.context, f.state, f.Input(EventKind::Cast, 800611)).Result() == Status::Unauthorized);
+    CHECK_EQ(f.Value(500149), 5);
+    f.selfAuras.insert(680313);
+    f.Apply(f.Input(EventKind::Cast, 800611));
+    CHECK_EQ(f.Value(500149), 6);
+    // Flash ranks carry the same +1.
+    f.Approve(502358, {500149});
+    f.Apply(f.Input(EventKind::Cast, 502358));
+    CHECK_EQ(f.Value(500149), 7);
+    // Wrong class is refused, not granted.
+    f.context.playerClass = 16;
+    CHECK(Evaluate(f.context, f.state, f.Input(EventKind::Cast, 500144)).Result() == Status::Unauthorized);
+}
+
+TEST(CoaCombat_lua_port_sun_gains_stop_under_dawn)
+{
+    // generate_sun: positive deltas are dropped while Dawn 807440 is up.
+    Fixture f(27);
+    f.Approve(804584, {500149});
+    f.Approve(804097, {500149});
+    f.Set(500149, 20);
+    f.Apply(f.Input(EventKind::Cast, 804584));
+    REQUIRE(f.AuraFor(807440));
+    f.Apply(f.Input(EventKind::Cast, 804097));
+    CHECK_EQ(f.Value(500149), 0);
+}
+
+TEST(CoaCombat_lua_port_shock_needs_storm_talent_and_thirst_needs_thirst)
+{
+    // Stormbringer Shock 804020 "Generates 20 Static" only when 500040 is
+    // known; Bloodmage Bloodmoon Blast 500125 "+1 Thirst" only when 500107
+    // is known or applied.
+    Fixture f(16);
+    f.Approve(804020, {803102});
+    CHECK(Evaluate(f.context, f.state, f.Input(EventKind::Cast, 804020)).Result() == Status::Unauthorized);
+    CHECK_EQ(f.Value(803102), 0);
+    f.known.insert(500040);
+    f.Apply(f.Input(EventKind::Cast, 804020));
+    CHECK_EQ(f.Value(803102), 20);
+    Fixture b(20);
+    b.Approve(500125, {706613});
+    CHECK(Evaluate(b.context, b.state, b.Input(EventKind::Cast, 500125)).Result() == Status::Unauthorized);
+    b.known.insert(500107);
+    b.Apply(b.Input(EventKind::Cast, 500125));
+    CHECK_EQ(b.Value(706613), 1);
+    Fixture c(20);
+    c.Approve(500125, {706613});
+    c.selfAuras.insert(500107);
+    c.Apply(c.Input(EventKind::Cast, 500125));
+    CHECK_EQ(c.Value(706613), 1);
+}
+
+TEST(CoaCombat_lua_port_flare_knight_ranger_cultist_reaper_amounts)
+{
+    // Pyromancer Flare Bolt 800790 +20 Heat; Knight Infernal Strike 801016
+    // +2 Demonfire; Ranger Quick Shot 500074 +1 Advantage; Cultist Blade of
+    // the Empire 500720 +20 Insanity; Reaper Reap 500357 +1 Soul Fragment.
+    Fixture f(24);
+    f.Approve(800790, {807389});
+    f.Apply(f.Input(EventKind::Cast, 800790));
+    CHECK_EQ(f.Value(807389), 20);
+    Fixture k(17);
+    k.Approve(801016, {500906});
+    k.Apply(k.Input(EventKind::Cast, 801016));
+    CHECK_EQ(k.Value(500906), 2);
+    Fixture r(21);
+    r.Approve(500074, {804329});
+    r.Apply(r.Input(EventKind::Cast, 500074));
+    CHECK_EQ(r.Value(804329), 1);
+    Fixture u(25);
+    u.Approve(500720, {500706});
+    u.Apply(u.Input(EventKind::Cast, 500720));
+    CHECK_EQ(u.Value(500706), 20);
+    Fixture p(30);
+    p.Approve(500357, {805077});
+    p.Apply(p.Input(EventKind::Cast, 500357));
+    CHECK_EQ(p.Value(805077), 1);
+}
+
+TEST(CoaCombat_lua_port_felsworn_demon_within_consumes_at_cap)
+{
+    // 800222 known + 6 Felfury -> orb consumed to 0, Inner Demon 804216
+    // applied for 30,000 ms. Below cap, unknown requires, or buff already
+    // up: no-op, and a further capping under the buff is left alone.
+    Fixture f(14);
+    f.Approve(1001, {800058});
+    f.Approve(800058, {800058}); // At-cap consume: self-edge, like PolicyResourceEdge.
+    f.Apply(f.Gain(800058, 5));
+    CHECK_EQ(f.Value(800058), 5);
+    CHECK(!f.AuraFor(804216));
+    f.Apply(f.Gain(800058, 1));
+    CHECK_EQ(f.Value(800058), 6); // Requires 800222 unknown: orb sits at cap.
+    CHECK(!f.AuraFor(804216));
+    f.known.insert(800222);
+    f.Apply(f.Input(EventKind::Tick));
+    CHECK_EQ(f.Value(800058), 0);
+    REQUIRE(f.AuraFor(804216));
+    CHECK_EQ(f.AuraFor(804216)->stacks, 1);
+    CHECK_EQ(f.AuraFor(804216)->expiresMs, f.context.nowMs + 30000);
+    f.Apply(f.Gain(800058, 6));
+    CHECK_EQ(f.Value(800058), 6); // Buff up: further capping left alone.
+    CHECK_EQ(f.AuraFor(804216)->stacks, 1);
+}
+
+TEST(CoaCombat_lua_port_inner_demon_rearms_after_expiry)
+{
+    Fixture f(14);
+    f.Approve(1001, {800058});
+    f.Approve(800058, {800058}); // At-cap consume: self-edge, like PolicyResourceEdge.
+    f.known.insert(800222);
+    f.Apply(f.Gain(800058, 6));
+    CHECK_EQ(f.Value(800058), 0);
+    REQUIRE(f.AuraFor(804216));
+    f.context.nowMs += 30000;
+    f.Apply(f.Input(EventKind::Tick));
+    CHECK(!f.AuraFor(804216));
+    f.Apply(f.Gain(800058, 6));
+    CHECK_EQ(f.Value(800058), 0);
+    REQUIRE(f.AuraFor(804216));
 }

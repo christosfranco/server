@@ -89,6 +89,18 @@ namespace coa::combat
         // -1 permanent, 0 no duration, positive milliseconds, other values invalid.
         int32_t durationMs = 0;
     };
+    // Tooltip-only resource generators the evidence pipeline cannot see: the
+    // cast carries no 175/178/183 effect (class_resources.lua CLASSES), so no
+    // Binding row can name them. Same numbers the Lua asserted.
+    enum class GeneratorGate { None, Known, SelfAura, KnownOrSelfAura };
+    struct Generator
+    {
+        uint32_t spell, playerClass, resource;
+        int32_t amount;
+        GeneratorGate gate;
+        uint32_t gateSpell; // Known/self-aura precondition, 0 when gate is None.
+    };
+    Generator const* FindGenerator(uint32_t spell);
     struct Resolution
     {
         bool exists = false, alive = false, inWorld = false;
@@ -106,6 +118,11 @@ namespace coa::combat
         uint32_t weaponMask = 0; // bit0 main hand, bit1 off hand; usable equipped weapons only
         void const* data = nullptr;
         bool (*known)(void const*, uint32_t spell) = nullptr;
+        // Self-aura presence for conditional generators (Sunwalker's Grace
+        // 680313 gating Gavel; Thirst 500107 read as known OR applied, the
+        // class_resources.lua Bloodmage [C]). Policy state tracks resources
+        // and markers only, so this reads the live holder like the Lua did.
+        bool (*selfAura)(void const*, uint32_t spell) = nullptr;
         // Committed catalog authorization, including an explicit source/currency edge.
         // currency=0 asks about the source spell itself. Never grant all children.
         bool (*authorized)(void const*, uint32_t spell, uint32_t currency) = nullptr;

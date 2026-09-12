@@ -42,6 +42,7 @@ set(SRC_GRP_TESTS
     CoaProtocolTest.cpp
     CoaProgressionTest.cpp
     CoaStarterTest.cpp
+    CoaStanceRulesTest.cpp
     CoaCombatRulesTest.cpp
     CoaCombatAdapterTest.cpp
     # Value-only tests, not registration of these modifiers in gameplay.
@@ -49,6 +50,7 @@ set(SRC_GRP_TESTS
     ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaExtendedModifierRules.cpp
     ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaCombatRules.cpp
     ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaStarter.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaStarterSpells.cpp
     CoaDatabaseTest.cpp
     ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaStore.cpp
     ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaCatalog.cpp

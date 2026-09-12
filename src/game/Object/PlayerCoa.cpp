@@ -501,6 +501,13 @@ bool Player::InitializeCoa(bool creating)
             throw std::runtime_error("CoA starter plan missing for character context");
         }
         auto seeds = catalog->AllSpells(getClass());
+        // The native starting book (research/ascension-reference, granted by
+        // ReconcileCoaSpells on create and at login). In the managed closure
+        // so its learned/triggered children resolve the same way catalog
+        // spells do; the static set itself is re-unioned at every reconcile,
+        // which is what keeps character_spell re-projectable after the
+        // managed-spell save sweep.
+        for (auto spell : coa::StarterSpells(getClass())) { seeds.insert(spell); }
         // Include class skill spells outside the ordinary purchasable catalog
         // (disabled nodes, old ranks, legacy skill grants). They must not become
         // an alternate authority just because no current ENTRY points at them.
@@ -612,6 +619,19 @@ bool Player::ReconcileCoaSpells()
     try
     {
         auto desired = m_coaBuild.spells;
+        // The native starting book: granted on create and re-granted at login
+        // reconcile (make-class-spells.py's playercreateinfo_spell set, now
+        // sourced here). Learned below like build roots: managed members are
+        // re-projected every login, unmanaged members persist in
+        // character_spell.
+        for (auto spell : coa::StarterSpells(getClass()))
+        {
+            if (sSpellStore.LookupEntry(spell)) { desired.insert(spell); }
+            else
+            {
+                sLog.outError("CoA starter spell %u absent from Spell.dbc for class %u", spell, uint32(getClass()));
+            }
+        }
         // Independent quest/profession/racial roots keep shared dependencies.
         for (auto const& spell : m_spells)
         {
