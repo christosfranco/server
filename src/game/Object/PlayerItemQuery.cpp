@@ -31,6 +31,76 @@
 #include "Utilities/Errors.h"
 #include "Player.h"
 
+namespace
+{
+    // Ascension's added classes (12..32) are CLONED from a stock donor per
+    // tools/make-classes.py's `ideal_donor()`: rage -> warrior, focus ->
+    // hunter, energy -> rogue (plate: warrior), runic -> death knight,
+    // else by armour proficiency (plate -> paladin, mail -> shaman, leather
+    // -> druid, mana default -> priest). The donor determines a class's
+    // stat curve and, on this realm, which relic-carrying stock class it
+    // inherits an equip slot from: a Sun Cleric's donor is Shaman, so its
+    // relic slot follows Totem's rule. Rows here are (Ascension class id ->
+    // donor stock class id), snapshotted from
+    // sql/ascension-classes-generated.sql; classes whose donor carries no
+    // relic (Priest, Warrior, Rogue, Hunter, Mage) are still listed for the
+    // reader -- they simply don't match any relic-subclass owner below.
+    struct RelicDonor { uint8 klass; uint8 donor; };
+    constexpr RelicDonor kAscensionRelicDonors[] =
+    {
+        { 10, CLASS_PRIEST       },  // Hero
+        { 12, CLASS_ROGUE        },  // Barbarian
+        { 13, CLASS_PRIEST       },  // Witch Doctor
+        { 14, CLASS_ROGUE        },  // Felsworn
+        { 15, CLASS_PRIEST       },  // Witch Hunter
+        { 16, CLASS_PRIEST       },  // Stormbringer
+        { 17, CLASS_WARRIOR      },  // Knight of Xoroth
+        { 18, CLASS_WARRIOR      },  // Guardian
+        { 19, CLASS_ROGUE        },  // Templar
+        { 20, CLASS_WARRIOR      },  // Bloodmage
+        { 21, CLASS_HUNTER       },  // Ranger
+        { 22, CLASS_PRIEST       },  // Chronomancer
+        { 23, CLASS_DEATH_KNIGHT },  // Necromancer
+        { 24, CLASS_PRIEST       },  // Pyromancer
+        { 25, CLASS_PALADIN      },  // Cultist
+        { 26, CLASS_ROGUE        },  // Starcaller
+        { 27, CLASS_SHAMAN       },  // Sun Cleric
+        { 28, CLASS_SHAMAN       },  // Tinker
+        { 29, CLASS_PRIEST       },  // Venomancer
+        { 30, CLASS_DEATH_KNIGHT },  // Reaper
+        { 31, CLASS_SHAMAN       },  // Primalist
+        { 32, CLASS_PRIEST       },  // Runemaster
+    };
+
+    // The stock class each armor-relic subclass was authored for. Stock
+    // 3.3.5a hardcoded these five in FindEquipSlot below; an Ascension class
+    // whose donor equals the owner inherits the same equip slot -- otherwise
+    // the added classes have no relic slot at all (finding: no creatable
+    // class on this realm could equip ANY relic before this change, PLAN
+    // 22.7b).
+    bool RelicSubClassMatchesClass(uint32 subClass, uint8 pClass)
+    {
+        uint8 owner = 0;
+        switch (subClass)
+        {
+            case ITEM_SUBCLASS_ARMOR_MISC:   owner = CLASS_WARLOCK;       break;
+            case ITEM_SUBCLASS_ARMOR_LIBRAM: owner = CLASS_PALADIN;       break;
+            case ITEM_SUBCLASS_ARMOR_IDOL:   owner = CLASS_DRUID;         break;
+            case ITEM_SUBCLASS_ARMOR_TOTEM:  owner = CLASS_SHAMAN;        break;
+            case ITEM_SUBCLASS_ARMOR_SIGIL:  owner = CLASS_DEATH_KNIGHT;  break;
+            default: return false;
+        }
+        if (pClass == owner)
+            return true;
+        for (auto const& e : kAscensionRelicDonors)
+        {
+            if (e.klass == pClass)
+                return e.donor == owner;
+        }
+        return false;
+    }
+}
+
 void Player::SetVirtualItemSlot(uint8 i, Item* item)
 {
     MANGOS_ASSERT(i < 3);
@@ -205,38 +275,18 @@ uint8 Player::FindEquipSlot(ItemPrototype const* proto, uint32 slot, bool swap) 
             break;
         case INVTYPE_RELIC:
         {
-            switch (proto->SubClass)
+            // Stock kept a per-subclass switch keyed on the five class ids
+            // that carried relics (paladin/druid/shaman/warlock/death
+            // knight). Ascension adds 22 classes cloned from those donors --
+            // the equivalence is now resolved through the donor table
+            // above so Sun Cleric/Tinker/Primalist (Shaman donor) get
+            // Totem, Cultist (Paladin donor) gets Libram, and
+            // Necromancer/Reaper (Death Knight donor) get Sigil. No
+            // Ascension class clones from Druid or Warlock, so Idol and
+            // spellstones (MISC) remain stock-only.
+            if (RelicSubClassMatchesClass(proto->SubClass, pClass))
             {
-                case ITEM_SUBCLASS_ARMOR_LIBRAM:
-                    if (pClass == CLASS_PALADIN)
-                    {
-                        slots[0] = EQUIPMENT_SLOT_RANGED;
-                    }
-                    break;
-                case ITEM_SUBCLASS_ARMOR_IDOL:
-                    if (pClass == CLASS_DRUID)
-                    {
-                        slots[0] = EQUIPMENT_SLOT_RANGED;
-                    }
-                    break;
-                case ITEM_SUBCLASS_ARMOR_TOTEM:
-                    if (pClass == CLASS_SHAMAN)
-                    {
-                        slots[0] = EQUIPMENT_SLOT_RANGED;
-                    }
-                    break;
-                case ITEM_SUBCLASS_ARMOR_MISC:
-                    if (pClass == CLASS_WARLOCK)
-                    {
-                        slots[0] = EQUIPMENT_SLOT_RANGED;
-                    }
-                    break;
-                case ITEM_SUBCLASS_ARMOR_SIGIL:
-                    if (pClass == CLASS_DEATH_KNIGHT)
-                    {
-                        slots[0] = EQUIPMENT_SLOT_RANGED;
-                    }
-                    break;
+                slots[0] = EQUIPMENT_SLOT_RANGED;
             }
             break;
         }

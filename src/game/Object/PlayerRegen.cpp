@@ -227,6 +227,21 @@ void Player::Regenerate(Powers power, uint32 diff)
             break;
         }
         case POWER_FOCUS:
+        {
+            // Stock 3.3.5a had no player class whose DisplayPower is FOCUS
+            // (Hunter is MANA on this build), so this arm was a no-op. On
+            // Ascension the Ranger's ChrClasses.dbc DisplayPower is 2
+            // (POWER_FOCUS) and Unit::GetCreatePowers now grants such a
+            // class a 100-point pool -- match pet-side focus regen so the
+            // pool refills between casts (PLAN 22.4b). Every other class
+            // (including stock ones and Ascension classes whose Display-
+            // Power is not FOCUS) falls through the same no-op as before.
+            ChrClassesEntry const* cEntry =
+                sChrClassesStore.LookupEntry(getClass());
+            if (cEntry && cEntry->DisplayPower == POWER_FOCUS)
+                addvalue = 24 * sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_FOCUS);
+            break;
+        }
         case POWER_HAPPINESS:
         case POWER_HEALTH:
             break;

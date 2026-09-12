@@ -314,16 +314,51 @@ void Unit::ApplyAuraProcTriggerDamage(Aura* aura, bool apply)
  */
 uint32 Unit::GetCreatePowers(Powers power) const
 {
+    // Ascension's added classes (PLAN 22.4b): ChrClasses.dbc DisplayPower is
+    // the client bar type and, on this realm, the base power pool a class
+    // spends from. Stock 3.3.5a hardcodes POWER_FOCUS to hunter pets and
+    // POWER_RUNIC_POWER to Death Knights, so a class whose DisplayPower is
+    // one of those (Ranger = FOCUS, Necromancer/Reaper = RUNIC_POWER) had
+    // max 0 and could not pay its own generator's cost -- Quick Shot (spell
+    // 500074, ManaCost 40 at powerType 2) was refused SPELL_FAILED_NO_POWER
+    // for the Ranger inside its own SpellRange. Consult ChrClasses.dbc for
+    // the class's declared DisplayPower and grant the pool when it matches.
+    // Stock classes are unaffected: no stock class has DisplayPower FOCUS or
+    // RUNIC_POWER (Hunter is MANA in 3.3.5, DK is still handled by the
+    // CLASS_DEATH_KNIGHT arm below), and the rage/energy/mana arms are
+    // unconditional and stay so.
+    auto playerClassDisplayPowerIs = [this](uint32 wanted) -> bool
+    {
+        if (GetTypeId() != TYPEID_PLAYER)
+            return false;
+        ChrClassesEntry const* cEntry =
+            sChrClassesStore.LookupEntry(((Player const*)this)->getClass());
+        return cEntry && cEntry->DisplayPower == wanted;
+    };
+
     switch (power)
     {
         case POWER_HEALTH:      return 0;                   // is it really should be here?
         case POWER_MANA:        return GetCreateMana();
         case POWER_RAGE:        return POWER_RAGE_DEFAULT;
-        case POWER_FOCUS:       return (GetTypeId() == TYPEID_PLAYER || !((Creature const*)this)->IsPet() || ((Pet const*)this)->getPetType() != HUNTER_PET ? 0 : POWER_FOCUS_DEFAULT);
+        case POWER_FOCUS:
+        {
+            if (GetTypeId() == TYPEID_PLAYER)
+                return playerClassDisplayPowerIs(POWER_FOCUS) ? POWER_FOCUS_DEFAULT : 0;
+            return (((Creature const*)this)->IsPet() && ((Pet const*)this)->getPetType() == HUNTER_PET)
+                       ? POWER_FOCUS_DEFAULT : 0;
+        }
         case POWER_ENERGY:      return POWER_ENERGY_DEFAULT;
         case POWER_HAPPINESS:   return (GetTypeId() == TYPEID_PLAYER || !((Creature const*)this)->IsPet() || ((Pet const*)this)->getPetType() != HUNTER_PET ? 0 : POWER_HAPPINESS_DEFAULT);
         case POWER_RUNE:        return (GetTypeId() == TYPEID_PLAYER && ((Player const*)this)->getClass() == CLASS_DEATH_KNIGHT ? POWER_RUNE_DEFAULT : 0);
-        case POWER_RUNIC_POWER: return (GetTypeId() == TYPEID_PLAYER && ((Player const*)this)->getClass() == CLASS_DEATH_KNIGHT ? POWER_RUNIC_POWER_DEFAULT : 0);
+        case POWER_RUNIC_POWER:
+        {
+            if (GetTypeId() != TYPEID_PLAYER)
+                return 0;
+            if (((Player const*)this)->getClass() == CLASS_DEATH_KNIGHT)
+                return POWER_RUNIC_POWER_DEFAULT;
+            return playerClassDisplayPowerIs(POWER_RUNIC_POWER) ? POWER_RUNIC_POWER_DEFAULT : 0;
+        }
     }
 
     return 0;

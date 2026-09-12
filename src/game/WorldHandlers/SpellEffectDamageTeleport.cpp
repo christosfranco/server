@@ -983,7 +983,42 @@ void Spell::EffectTriggerSpell(SpellEffectIndex effIndex)
     {
         // Note: not exist spells with weapon req. and IsSpellHaveCasterSourceTargets == true
         // so this just for speedup places in else
-        caster = IsSpellWithCasterSourceTargetsOnly(spellInfo) ? unitTarget : m_caster;
+        //
+        // ASCENSION (PLAN 22.4c): a triggered spell in Ascension's custom id
+        // range keeps the original caster (the TrinityCore semantic), instead
+        // of being re-cast BY the unit target. Stock 3.3.5a ids keep the
+        // MaNGOS redirect below, which is load-bearing for stock by design:
+        // Shockwave (39) triggers Dropped Weapon (6608) so that the VICTIM
+        // drops its weapon, Explosive Sheep (4050) triggers its own suicide
+        // (3617), Hex of Ravenclaw (7655) transforms its victim (7657) --
+        // all cases where the design wants the TARGET to suffer or perform
+        // the self-target effect, and changing them would change stock
+        // gameplay. Ascension's custom spells (stock 3.3.5a ids end below
+        // 100000) are authored against TrinityCore -- Ascension's base --
+        // where the trigger belongs to the caster: 1,246 custom pairs have
+        // an enemy-target parent triggering a self-target spell, and they
+        // are overwhelmingly caster-side procs (resource gains, on-hit
+        // self buffs) that the redirect hands to the enemy instead. The
+        // case at hand: Felsworn Twin Slice (801901) targets the enemy
+        // (ImplicitTargetA 6, three SPELL_EFFECT_TRIGGER_SPELL effects) and
+        // its third trigger fires Felfury (800058, a TARGET_SELF stacking
+        // aura) at that same target. The redirect made the ENEMY the caster
+        // of a self-target spell -- the boar cast Felfury on itself
+        // (world-server.log: "Spell 800058 Effect0/1/2 : 6 Targets: Creature
+        // (Entry: 2966 ...)") while the player's own orb filled only through
+        // the Eluna cover rule. With the original caster kept, the trigger
+        // resolves TARGET_SELF against the player (FillTargetMap adds
+        // m_caster for caster-source targets regardless of the passed
+        // unitTarget), so the stack lands on the player and accumulates
+        // natively to its StackAmount -- and the wire never carries Felfury
+        // for the target's guid. Non-self triggers are unaffected on either
+        // branch: their IsSpellWithCasterSourceTargetsOnly is false, so both
+        // pick m_caster (Twin Slice's own 808303/808304 damage triggers did
+        // already).
+        if (spellInfo->ID > 100000)
+            caster = m_caster;
+        else
+            caster = IsSpellWithCasterSourceTargetsOnly(spellInfo) ? unitTarget : m_caster;
     }
 
     caster->CastSpell(unitTarget, spellInfo, true, m_CastItem, NULL, m_originalCasterGUID, m_spellInfo);
