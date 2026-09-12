@@ -985,7 +985,7 @@ void Player::RewardQuest(Quest const* pQuest, uint32 reward, Object* questGiver,
     // Used for client inform but rewarded only in case not max level
     uint32 xp = uint32(pQuest->XPValue(this) * sWorld.getConfig(CONFIG_FLOAT_RATE_XP_QUEST));
 
-    if (getLevel() < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+    if (getLevel() < GetProgressionLevelCap())
     {
         GiveXP(xp , NULL);
 
@@ -2587,7 +2587,7 @@ void Player::SendQuestReward(Quest const* pQuest, uint32 XP)
     WorldPacket data(SMSG_QUESTGIVER_QUEST_COMPLETE, (4 + 4 + 4 + 4 + 4));
     data << uint32(questid);
 
-    if (getLevel() < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+    if (getLevel() < GetProgressionLevelCap())
     {
         data << uint32(XP);
         data << uint32(pQuest->GetRewOrReqMoney());
@@ -2905,5 +2905,4 @@ void Player::UpdateForQuestWorldObjects()
     udata.BuildPacket(&packet);
     GetSession()->SendPacket(&packet);
 }
-
 

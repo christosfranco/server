@@ -32,6 +32,7 @@
 
 #include <cmath>
 #include <string>
+#include <stdexcept>
 #include "Common/TimeConstants.h"
 #include "Common/ServerDefines.h"
 #include "World.h"
@@ -45,6 +46,7 @@
 #include "Opcodes.h"
 #include "WorldSession.h"
 #include "WorldPacket.h"
+#include "WorldGatewayAuth.h"
 #include "Player.h"
 #include "SkillExtraItems.h"
 #include "SkillDiscovery.h"
@@ -217,6 +219,38 @@ void World::LoadConfigSettings(bool reload)
     setConfig(CONFIG_BOOL_ADDON_CHANNEL, "AddonChannel", true);
     setConfig(CONFIG_BOOL_CLEAN_CHARACTER_DB, "CleanCharacterDB", true);
     setConfig(CONFIG_BOOL_GRID_UNLOAD, "GridUnload", true);
+    setConfig(CONFIG_BOOL_ASCENSION_STOCK_AUTH_COMPATIBILITY,
+        "Ascension.StockAuthCompatibility", false);
+    std::shared_ptr<const WorldPacket> knownAddons;
+    try
+    {
+        knownAddons = BuildAscensionKnownAddons(sConfig.GetStringDefault(
+            "Ascension.KnownAddons", ASCENSION_KNOWN_ADDONS_DEFAULT));
+    }
+    catch (const std::invalid_argument& error)
+    {
+        sLog.outError("Ascension.KnownAddons: %s; addon bootstrap disabled (no fallback).",
+                      error.what());
+    }
+    // Network threads and queued sessions must never see a partial reload.
+    std::atomic_store(&m_ascensionKnownAddons, knownAddons);
+
+    const std::string requiredUpdate = sConfig.GetStringDefault(
+        "Ascension.RequiredClientUpdate", "");
+    if (!reload)
+    {
+        m_requiredClientUpdate = requiredUpdate;
+        if (!requiredUpdate.empty() && !IsValidClientUpdateMarker(requiredUpdate))
+        {
+            sLog.outError("Ascension.RequiredClientUpdate is invalid; "
+                "all world admissions will fail.");
+        }
+    }
+    else if (requiredUpdate != m_requiredClientUpdate)
+    {
+        sLog.outError("Ascension.RequiredClientUpdate cannot change on reload; "
+            "retaining startup requirement. Restart and drain all sessions and queues.");
+    }
 
     // Normalize one complete policy before publishing it. Sessions copy this
     // immutable manager snapshot only when authenticated admission completes.

@@ -24,6 +24,8 @@
  */
 
 #include <cstdint>
+#include <array>
+#include <chrono>
 #include <utility>
 #include <vector>
 #include <memory>
@@ -103,13 +105,8 @@ namespace proto
 
     std::vector<uint8_t> ClientConnection::onData(const uint8_t* data, size_t len)
     {
-        std::vector<WorldPacket> packets;
-
-        if (m_codec.Feed(data, len, packets) == DecodeStatus::Malformed)
+        if (closed())
         {
-            sLog.outError("proto: malformed packet framing from %s, dropping",
-                          m_address.c_str());
-            Close();
             return std::vector<uint8_t>();
         }
 
@@ -118,16 +115,25 @@ namespace proto
         // peer has to be the worst a malformed packet can do.
         try
         {
-            for (size_t i = 0; i < packets.size(); ++i)
-            {
-                // Before the move, which empties it.
-                m_gateway.TracePacket(m_traceSession.load(std::memory_order_relaxed),
-                                      packets[i], true);
-                if (!HandlePacket(std::move(packets[i])))
+            // Auth must install the decryptor before a coalesced next header is
+            // decoded. A rejected proof must not decode or dispatch its suffix.
+            const DecodeStatus status = m_codec.Feed(data, len,
+                [this](WorldPacket&& packet)
                 {
-                    Close();
-                    break;
-                }
+                    m_gateway.TracePacket(m_traceSession.load(std::memory_order_relaxed),
+                                          packet, true);
+                    if (!HandlePacket(std::move(packet)))
+                    {
+                        Close();
+                        return false;
+                    }
+                    return !closed();
+                });
+            if (status == DecodeStatus::Malformed)
+            {
+                sLog.outError("proto: malformed packet framing from %s, dropping",
+                              m_address.c_str());
+                Close();
             }
         }
         catch (ByteBufferException&)
@@ -169,6 +175,7 @@ namespace proto
             return false;
         }
 
+        TraceKeepalive(packet, true);
         m_gateway.Deliver(m_session, std::move(packet));
         return true;
     }
@@ -216,10 +223,9 @@ namespace proto
 
         if (lookup.status != AuthStatus::Ok)
         {
-            SendAuthStatus(lookup.status);
-            sLog.outError("proto: login refused for account '%s' from %s (code %u)",
-                          request.account.c_str(), m_address.c_str(),
+            sLog.outError("world_auth stage=lookup reason=lookup_rejected status=%u",
                           uint32(lookup.status));
+            SendAuthStatus(lookup.status);
             return false;
         }
 
@@ -245,18 +251,31 @@ namespace proto
 
         if (std::memcmp(sha.GetDigest(), request.digest, AUTH_DIGEST_SIZE) != 0)
         {
+            sLog.outError("world_auth stage=proof reason=proof_failed");
             SendAuthStatus(AuthStatus::Failed);
-            sLog.outError("proto: bad login proof for account '%s' from %s",
-                          request.account.c_str(), m_address.c_str());
             return false;
         }
 
-        // Arm the cipher BEFORE the world is told, because the world answers with
+        // Apply the cipher policy BEFORE the world is told: the world answers with
         // SMSG_AUTH_RESPONSE (or a queue position) the moment it accepts the
-        // session, and that reply must already be encrypted.
-        m_crypt.Init(&sessionKey);
-        m_codec.SetHeaderDecryptor(
-            [this](uint8* header, size_t len) { m_crypt.DecryptRecv(header, len); });
+        // session, and that reply must already use the selected framing.
+        // The gateway selects the profile from operator policy, not build alone.
+        // No profile takes effect until the proof above has passed.
+        {
+            std::lock_guard<std::mutex> lock(m_cryptSendLock);
+            if (lookup.profile != ConnectionProfile::AscensionClearHeaders)
+            {
+                m_crypt.Init(&sessionKey);
+                m_codec.SetHeaderDecryptor(
+                    [this](uint8* header, size_t len) { m_crypt.DecryptRecv(header, len); });
+            }
+            m_coaBootstrapPending =
+                lookup.profile == ConnectionProfile::AscensionStockAuthCoA;
+            if (m_coaBootstrapPending)
+            {
+                m_knownAddons = lookup.knownAddons;
+            }
+        }
 
         // Hand the world a share of our own lifetime. net::ISession is held by
         // shared_ptr from the moment the transport accepts, so this is well
@@ -265,18 +284,18 @@ namespace proto
         std::shared_ptr<IClientLink> link =
             std::static_pointer_cast<ClientConnection>(shared_from_this());
 
-        const SessionId session = m_gateway.Attach(request, link, lookup.context);
-        if (session == INVALID_SESSION_ID)
+        const AttachResult attached = m_gateway.Attach(request, link, lookup.context);
+        if (attached.session == INVALID_SESSION_ID)
         {
-            SendAuthStatus(AuthStatus::SystemError);
+            SendAuthStatus(attached.failure);
             return false;
         }
 
-        m_session = session;
-        m_traceSession.store(session, std::memory_order_relaxed);
+        m_session = attached.session;
+        m_traceSession.store(attached.session, std::memory_order_relaxed);
 
-        DEBUG_LOG("proto: account '%s' authenticated from %s",
-                  request.account.c_str(), m_address.c_str());
+        DEBUG_LOG("proto: account '%s' authenticated from %s session=%u",
+                  request.account.c_str(), m_address.c_str(), attached.session);
         return true;
     }
 
@@ -294,24 +313,78 @@ namespace proto
             return;
         }
 
-        m_gateway.TracePacket(m_traceSession.load(std::memory_order_relaxed), packet, false);
-
-        std::vector<uint8_t> wire;
+        // Keep encryption AND transport enqueue in the same order across threads.
+        // AUTH_OK and its optional bootstrap must precede subsequent replies.
+        std::lock_guard<std::mutex> lock(m_cryptSendLock);
+        const auto encryptHeader = [this](uint8* header, size_t len)
         {
-            // The cipher is a stream: two threads encrypting headers concurrently
-            // would interleave the keystream and desynchronise the client for good.
-            std::lock_guard<std::mutex> lock(m_cryptSendLock);
-            wire = PacketCodec::Encode(packet,
-                [this](uint8* header, size_t len)
-                {
-                    if (m_crypt.IsInitialized())
-                    {
-                        m_crypt.EncryptSend(header, len);
-                    }
-                });
+            if (m_crypt.IsInitialized())
+            {
+                m_crypt.EncryptSend(header, len);
+            }
+        };
+        m_gateway.TracePacket(m_traceSession.load(std::memory_order_relaxed), packet, false);
+        const std::vector<uint8_t> wire = PacketCodec::Encode(packet, encryptHeader);
+        m_sender(wire.data(), wire.size());
+        TraceKeepalive(packet, false);
+
+        if (m_coaBootstrapPending && packet.GetOpcode() == SMSG_AUTH_RESPONSE
+            && !packet.empty() && packet.contents()[0] == uint8(AuthStatus::Ok))
+        {
+            m_coaBootstrapPending = false;
+            // Exact minimal payload from coa_realm_info_frame: realm 1,
+            // expansion/unknowns zero, CoA flag at byte 42, empty A/B data paths.
+            // This outbound-only uint16 opcode needs no inbound table entry.
+            constexpr uint16 SMSG_COA_REALM_INFO = 0x9BC;
+            std::array<uint8, 47> payload{};
+            payload[0] = 1;
+            payload[36] = 1; // Ordinary Live catalog selector, separate from CoA.
+            payload[42] = 1;
+            WorldPacket bootstrap(SMSG_COA_REALM_INFO, payload.size());
+            bootstrap.append(payload.data(), payload.size());
+            m_gateway.TracePacket(m_traceSession.load(std::memory_order_relaxed),
+                                  bootstrap, false);
+            const std::vector<uint8_t> bootstrapWire =
+                PacketCodec::Encode(bootstrap, encryptHeader);
+            m_sender(bootstrapWire.data(), bootstrapWire.size());
+            if (m_knownAddons)
+            {
+                m_gateway.TracePacket(m_traceSession.load(std::memory_order_relaxed),
+                                      *m_knownAddons, false);
+                const auto addonWire = PacketCodec::Encode(*m_knownAddons, encryptHeader);
+                m_sender(addonWire.data(), addonWire.size());
+                m_knownAddons.reset();
+            }
+        }
+    }
+
+    void ClientConnection::TraceKeepalive(const WorldPacket& packet, bool incoming)
+    {
+        if (!sLog.HasLogLevelOrHigher(LOG_LVL_DEBUG)
+            || sLog.HasLogFilter(LOG_FILTER_PLAYER_STATS)
+            || packet.GetOpcode() != (incoming ? CMSG_PING : SMSG_PONG)
+            || packet.size() != (incoming ? 8u : 4u))
+        {
+            return;
         }
 
-        m_sender(wire.data(), wire.size());
+        const SessionId session = m_traceSession.load(std::memory_order_relaxed);
+        uint32& count = incoming ? m_pingTraceCount : m_pongTraceCount;
+        // Bound even privileged/disabled-flood-policy sessions; never affect traffic.
+        if (session == INVALID_SESSION_ID || count >= 64)
+        {
+            return;
+        }
+        ++count;
+        const uint64 now = uint64(std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+        // Sender is void and may discard during teardown. This is a handoff,
+        // NOT a socket-write acknowledgement or evidence of client processing.
+        DEBUG_FILTER_LOG(LOG_FILTER_PLAYER_STATS,
+            "proto: keepalive %s session=%u sequence=%u latency_ms=%u unix_ms=" UI64FMTD " encrypted=%u",
+            incoming ? "ping_received" : "pong_handoff", session,
+            packet.read<uint32>(0), incoming ? packet.read<uint32>(4) : 0,
+            now, uint32(m_crypt.IsInitialized()));
     }
 
     void ClientConnection::Close()

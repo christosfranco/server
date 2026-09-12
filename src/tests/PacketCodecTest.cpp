@@ -134,6 +134,48 @@ TEST(PacketCodec_handles_an_empty_payload)
     CHECK_EQ(int(out[0].size()), 0);
 }
 
+TEST(PacketCodec_handler_stops_before_next_header_and_leaves_clean_state)
+{
+    proto::PacketCodec codec;
+    int headers = 0;
+    int packets = 0;
+    codec.SetHeaderDecryptor([&headers](uint8*, size_t) { ++headers; });
+    std::vector<uint8> wire = Frame(1, {});
+    // A malformed suffix must not even reach the decryptor after rejection.
+    wire.insert(wire.end(), proto::CLIENT_HEADER_SIZE, 0xFF);
+    CHECK(codec.Feed(wire.data(), wire.size(), [&](WorldPacket&& packet)
+    {
+        ++packets;
+        CHECK_EQ(packet.GetOpcode(), 1);
+        return false;
+    }) == proto::DecodeStatus::Stopped);
+    CHECK_EQ(headers, 1);
+    CHECK_EQ(packets, 1);
+
+    const auto next = Frame(2, {3});
+    std::vector<WorldPacket> out;
+    CHECK(codec.Feed(next.data(), next.size(), out) == proto::DecodeStatus::Ok);
+    REQUIRE(out.size() == 1);
+    CHECK_EQ(out[0].GetOpcode(), 2);
+    CHECK_EQ(out[0].size(), size_t(1));
+    CHECK_EQ(headers, 2);
+}
+
+TEST(PacketCodec_handler_dispatches_valid_prefix_before_malformed_suffix)
+{
+    proto::PacketCodec codec;
+    auto wire = Frame(1, {2});
+    wire.insert(wire.end(), proto::CLIENT_HEADER_SIZE, 0xFF);
+    int packets = 0;
+    CHECK(codec.Feed(wire.data(), wire.size(), [&](WorldPacket&& packet)
+    {
+        ++packets;
+        CHECK_EQ(packet.GetOpcode(), 1);
+        return true;
+    }) == proto::DecodeStatus::Malformed);
+    CHECK_EQ(packets, 1);
+}
+
 TEST(PacketCodec_rejects_an_undersized_size_field)
 {
     // The size field counts the 4 opcode bytes, so anything below 4 is

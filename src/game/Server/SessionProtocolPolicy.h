@@ -27,15 +27,55 @@
 #define MANGOS_H_SESSIONPROTOCOLPOLICY
 
 #include "Platform/Define.h"
+#include "IWorldGateway.h"
+#include "Opcodes.h"
 
 #include <chrono>
+
+inline constexpr uint32 SessionOpcodeCount = 0x72D;
+inline bool AdmitCharacterClass(proto::ConnectionProfile profile, uint32 playerClass, bool catalogClass)
+{
+    return (playerClass >= 1 && playerClass <= 11) ||
+        (catalogClass && profile == proto::ConnectionProfile::AscensionStockAuthCoA);
+}
+
+class CoaRequestGate
+{
+public:
+    using Clock = std::chrono::steady_clock;
+    bool Accept(Clock::time_point now)
+    {
+        if (m_seen && now - m_last < std::chrono::milliseconds(500))
+        {
+            return false;
+        }
+        m_seen = true;
+        m_last = now;
+        return true;
+    }
+private:
+    bool m_seen = false;
+    Clock::time_point m_last{};
+};
+inline bool AdmitSessionOpcode(proto::ConnectionProfile profile, uint32 opcode, size_t bytes)
+{
+    return opcode < NUM_MSG_TYPES ||
+        (profile == proto::ConnectionProfile::AscensionStockAuthCoA && opcode == 0x727 && bytes <= 4 + 1024 * 21);
+}
+inline bool AdmitSessionSend(proto::ConnectionProfile profile, uint32 opcode)
+{
+    return opcode < NUM_MSG_TYPES ||
+        (profile == proto::ConnectionProfile::AscensionStockAuthCoA &&
+            (opcode == 0x725 || opcode == 0x726 || opcode == 0x72C));
+}
 
 class SessionPingTracker
 {
     public:
         using Clock = std::chrono::steady_clock;
 
-        uint32 Record(Clock::time_point now)
+        uint32 Record(Clock::time_point now,
+            Clock::duration minimumInterval = std::chrono::seconds(27))
         {
             if (!m_hadPing)
             {
@@ -44,7 +84,7 @@ class SessionPingTracker
                 return 0;
             }
 
-            bool fast = now - m_lastPing < std::chrono::seconds(27);
+            bool fast = now - m_lastPing < minimumInterval;
             m_lastPing = now;
             if (fast)
                 return ++m_fastRun;

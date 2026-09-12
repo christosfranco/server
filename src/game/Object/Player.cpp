@@ -711,6 +711,12 @@ bool Player::Create(uint32 guidlow, const std::string& name, uint8 race, uint8 c
         return false;
     }
 
+    if (!GetSession()->CanUseCharacterClass(class_))
+    {
+        sLog.outError("Character class %u requires its supported native profile and catalog", uint32(class_));
+        return false;
+    }
+
     // Validate gender
     if (gender != uint8(GENDER_MALE) && gender != uint8(GENDER_FEMALE))
     {
@@ -798,7 +804,16 @@ bool Player::Create(uint32 guidlow, const std::string& name, uint8 race, uint8 c
         }
     }
 
+    if (IsCoaManaged())
+    {
+        start_level = 1;
+    }
     SetUInt32Value(UNIT_FIELD_LEVEL, start_level);
+
+    if (!InitializeCoa(true))
+    {
+        return false;
+    }
 
     InitRunes();
 
@@ -822,13 +837,14 @@ bool Player::Create(uint32 guidlow, const std::string& name, uint8 race, uint8 c
     UpdateMaxHealth(); // Update max Health (for add bonus from stamina)
     SetHealth(GetMaxHealth());
 
-    if (GetPowerType() == POWER_MANA)
+    bool const starterMana = GetCoaStarter() && coa::StarterNeedsMana(GetCoaStarter()->spell);
+    if (GetPowerType() == POWER_MANA || starterMana)
     {
         UpdateMaxPower(POWER_MANA); // Update max Mana (for add bonus from intellect)
         SetPower(POWER_MANA, GetMaxPower(POWER_MANA));
     }
 
-    if (GetPowerType() != POWER_MANA)                       // hide additional mana bar if we have no mana
+    if (GetPowerType() != POWER_MANA && !starterMana)        // retain required ancillary starter mana
     {
         SetPower(POWER_MANA, 0);
         SetMaxPower(POWER_MANA, 0);
@@ -837,6 +853,14 @@ bool Player::Create(uint32 guidlow, const std::string& name, uint8 race, uint8 c
     // original spells
     learnDefaultSpells();
     LearnClassLevelSpells();
+    if (!PrepareCoaStarterInfrastructure())
+    {
+        return false;
+    }
+    if (!ReconcileCoaSpells())
+    {
+        return false;
+    }
 
     // Initialize action bar with default actions
     for (PlayerCreateInfoActions::const_iterator action_itr = info->action.begin(); action_itr != info->action.end(); ++action_itr)
@@ -845,6 +869,10 @@ bool Player::Create(uint32 guidlow, const std::string& name, uint8 race, uint8 c
     }
 
     // Initialize player's starting items
+    if (!EquipCoaStarter())
+    {
+        return false;
+    }
 
     CharStartOutfitEntry const* oEntry = NULL;
     for (uint32 i = 1; i < sCharStartOutfitStore.GetNumRows(); ++i)
@@ -943,8 +971,7 @@ bool Player::Create(uint32 guidlow, const std::string& name, uint8 race, uint8 c
         }
     }
     // All item positions resolved
-
-    return true;
+    return CheckCoaStarterReady();
 }
 
 /**
@@ -1119,6 +1146,7 @@ void Player::Update(uint32 update_diff, uint32 p_time)
     // Used to implement delayed far teleports
     SetCanDelayTeleport(true);
     Unit::Update(update_diff, p_time);
+    UpdateCoaCombatRules();
     SetCanDelayTeleport(false);
 
     // Periodic observer-side visibility maintenance.
@@ -1448,6 +1476,7 @@ void Player::SetDeathState(DeathState s)
 {
     uint32 ressSpellId = 0;
 
+    bool const stateChanged = GetDeathState() != s;
     bool cur = IsAlive();
 
     if (s == JUST_DIED && cur)
@@ -1485,6 +1514,12 @@ void Player::SetDeathState(DeathState s)
     }
 
     Unit::SetDeathState(s);
+
+    if (stateChanged)
+    {
+        // No pre-death fraction or elapsed dead time belongs to the next life.
+        ResetPowerRegen();
+    }
 
     // restore resurrection spell id for player after aura remove
     if (s == JUST_DIED && cur && ressSpellId)
@@ -2455,6 +2490,7 @@ void Player::SendLogXPGain(uint32 GivenXP, Unit* victim, uint32 RestXP)
  */
 void Player::GiveXP(uint32 xp, Unit* victim)
 {
+    uint32 const maximumLevel = GetProgressionLevelCap();
     if (xp < 1)
     {
         return;
@@ -2481,7 +2517,7 @@ void Player::GiveXP(uint32 xp, Unit* victim)
 #endif /* ENABLE_ELUNA */
 
     // XP to money conversion processed in Player::RewardQuest
-    if (level >= sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+    if (level >= maximumLevel)
     {
         return;
     }
@@ -2514,13 +2550,17 @@ void Player::GiveXP(uint32 xp, Unit* victim)
     uint32 nextLvlXP = GetUInt32Value(PLAYER_NEXT_LEVEL_XP);
     uint32 newXP = curXP + xp + rested_bonus_xp;
 
-    while (newXP >= nextLvlXP && level < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+    while (newXP >= nextLvlXP && level < maximumLevel)
     {
         newXP -= nextLvlXP;
 
-        if (level < sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+        if (level < maximumLevel)
         {
             SetLevel(level + 1);
+            if (m_coaFailed)
+            {
+                return;
+            }
         }
 
         level = getLevel();
@@ -2537,10 +2577,19 @@ void Player::GiveXP(uint32 xp, Unit* victim)
  */
 void Player::SetLevel(uint32 level)
 {
+    if (IsCoaManaged() && (level < 1 || level > 60 || m_coaFailed))
+    {
+        return;
+    }
     uint8 oldLevel = getLevel();
     if (level == oldLevel || level > DEFAULT_MAX_LEVEL)
     {
         return;
+    }
+
+    if (!ChangeCoaLevel(level))
+    {
+        return; // No level, XP, stats or client side effects before the checked commit.
     }
 
     SetUInt32Value(UNIT_FIELD_LEVEL, level);
@@ -2591,10 +2640,18 @@ void Player::SetLevel(uint32 level)
     }
 
     SetCreateHealth(classInfo.basehealth);
-    SetCreateMana(classInfo.basemana);
+    SetCreateMana(GetCoaBaseMana(classInfo.basemana));
 
     InitTalentForLevel();
     LearnClassLevelSpells();          // abilities this level entitles the class to
+    if (!ReconcileCoaSpells())
+    {
+        return;
+    }
+    if (IsCoaManaged() && IsInWorld() && !SendCoaSnapshot())
+    {
+        return;
+    }
     InitTaxiNodesForLevel();
     InitGlyphsForLevel();
 
@@ -2611,7 +2668,7 @@ void Player::SetLevel(uint32 level)
     {
         SetPower(POWER_RAGE, GetMaxPower(POWER_RAGE));
     }
-    SetPower(POWER_FOCUS, 0);
+    SetPower(POWER_FOCUS, IsCoaManaged() ? GetMaxPower(POWER_FOCUS) : 0);
     SetPower(POWER_HAPPINESS, 0);
 
     _ApplyAllLevelScaleItemMods(true);
@@ -2672,6 +2729,12 @@ void Player::GiveLevel(uint32 level)
  */
 void Player::UpdateFreeTalentPoints(bool resetIfNeed)
 {
+    if (IsCoaManaged())
+    {
+        m_usedTalentCount = 0;
+        SetFreeTalentPoints(0);
+        return;
+    }
     uint32 level = getLevel();
 
     // The level-10 gate is the stock progression's, not a rule about talents:
@@ -2750,7 +2813,7 @@ void Player::InitStatsForLevel(bool reapplyMods)
     PlayerLevelInfo info;
     sObjectMgr.GetPlayerLevelInfo(getRace(), getClass(), getLevel(), &info);
 
-    SetUInt32Value(PLAYER_FIELD_MAX_LEVEL, sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL));
+    SetUInt32Value(PLAYER_FIELD_MAX_LEVEL, GetProgressionLevelCap());
     SetUInt32Value(PLAYER_NEXT_LEVEL_XP, sObjectMgr.GetXPForLevel(getLevel()));
 
     // reset before any aura state sources (health set/aura apply)
@@ -2775,7 +2838,7 @@ void Player::InitStatsForLevel(bool reapplyMods)
     SetCreateHealth(classInfo.basehealth);
 
     // set create powers
-    SetCreateMana(classInfo.basemana);
+    SetCreateMana(GetCoaBaseMana(classInfo.basemana));
 
     SetArmor(int32(m_createStats[STAT_AGILITY] * 2));
 
@@ -2904,7 +2967,7 @@ void Player::InitStatsForLevel(bool reapplyMods)
     {
         SetPower(POWER_RAGE, GetMaxPower(POWER_RAGE));
     }
-    SetPower(POWER_FOCUS, 0);
+    SetPower(POWER_FOCUS, IsCoaManaged() ? GetMaxPower(POWER_FOCUS) : 0);
     SetPower(POWER_HAPPINESS, 0);
     SetPower(POWER_RUNIC_POWER, 0);
 
@@ -3161,8 +3224,13 @@ std::string Player::SanitiseStaleCharacterRows(uint32 lowguid)
  * @param updateRealmChars when this flag is set, the amount of characters on that realm will be updated in the realmlist
  * @param deleteFinally    if this flag is set, the config option will be ignored and the character will be permanently removed from the database
  */
-void Player::DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRealmChars, bool deleteFinally)
+bool Player::DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRealmChars, bool deleteFinally)
 {
+    Guild* guild = sGuildMgr.GetGuildById(GetGuildIdFromDB(playerguid));
+    if (guild && !guild->CanDisband())
+    {
+        return false;
+    }
     //Make sure to delete unresolved tickets so they don't take up place in the open tickets list
     CharacterDatabase.PExecute("DELETE FROM `character_ticket` "
                                "WHERE `resolved` = 0 AND `guid` = %u",
@@ -3190,16 +3258,13 @@ void Player::DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRe
     sCorpseManager.ConvertCorpseForPlayer(playerguid);
 
     // remove from guild
-    if (uint32 guildId = GetGuildIdFromDB(playerguid))
+    if (guild && guild->DelMember(playerguid))
     {
-        if (Guild* guild = sGuildMgr.GetGuildById(guildId))
+        if (!guild->Disband())
         {
-            if (guild->DelMember(playerguid))
-            {
-                guild->Disband();
-                delete guild;
-            }
+            return false;
         }
+        delete guild;
     }
 
     // remove from arena teams
@@ -3372,6 +3437,15 @@ void Player::DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRe
             // Tables keyed on a column other than `guid` -- they stay
             // hand-written because the WHERE clause differs.
             CharacterDatabase.PExecute("DELETE FROM `group_instance` WHERE `leaderGuid` = '%u'", lowguid);
+            // The sideTables loop above already drops every `character_*` row
+            // keyed on `guid` (inventory, queststatus, reputation, skills,
+            // spell, cooldown, talent, ticket, ...); only the native CoA
+            // tables are extra, and only when the catalog is loaded.
+            if (sWorld.GetCoaCatalog())
+            {
+                CharacterDatabase.PExecute("DELETE FROM character_coa_entry WHERE guid=%u", lowguid);
+                CharacterDatabase.PExecute("DELETE FROM character_coa_state WHERE guid=%u", lowguid);
+            }
             CharacterDatabase.PExecute("DELETE FROM `item_instance` WHERE `owner_guid` = '%u'", lowguid);
             CharacterDatabase.PExecute("DELETE FROM `character_social` WHERE `friend`='%u'", lowguid);
             CharacterDatabase.PExecute("DELETE FROM `mail` WHERE `receiver` = '%u'", lowguid);
@@ -3389,12 +3463,14 @@ void Player::DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRe
             break;
         default:
             sLog.outError("Player::DeleteFromDB: Unsupported delete method: %u.", charDelete_method);
+            return false;
     }
 
     if (updateRealmChars)
     {
         sWorld.UpdateRealmCharCount(accountId);
     }
+    return true;
 }
 
 /**
@@ -3432,7 +3508,10 @@ void Player::DeleteOldCharacters(uint32 keepDays)
         {
             Field* charFields = resultChars->Fetch();
             ObjectGuid guid = ObjectGuid(HIGHGUID_PLAYER, charFields[0].GetUInt32());
-            Player::DeleteFromDB(guid, charFields[1].GetUInt32(), true, true);
+            if (!Player::DeleteFromDB(guid, charFields[1].GetUInt32(), true, true))
+            {
+                sLog.outError("Character %u deletion refused; authoritative recovery required.", guid.GetCounter());
+            }
         }
         while (resultChars->NextRow());
         delete resultChars;
@@ -4334,6 +4413,8 @@ void Player::SendInitialPacketsAfterAddToMap()
     SendAurasForTarget(this);
     SendEnchantmentDurations();                             // must be after add to map
     SendItemDurations();                                    // must be after add to map
+    // Shared by successful login and far-transfer completion, after SendInitSelf.
+    SendCoaSnapshot();
 }
 
 
@@ -6040,4 +6121,3 @@ void Player::_LoadRandomBGStatus(QueryResult *result)
         delete result;
     }
 }
-

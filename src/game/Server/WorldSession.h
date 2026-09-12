@@ -50,6 +50,7 @@
 
 struct ItemPrototype;
 struct AuctionEntry;
+namespace PlayerPersistence { template<class Participant> class InventoryTransaction; }
 struct AuctionHouseEntry;
 struct DeclinedName;
 struct TradeStatusInfo;
@@ -305,6 +306,8 @@ class WorldSessionFilter : public PacketFilter
  */
 class WorldSession
 {
+        proto::ConnectionProfile const m_clientProfile;
+        CoaRequestGate m_coaRequestGate;
         friend class CharacterHandler;
 
     public:
@@ -331,7 +334,12 @@ class WorldSession
                      AccountTypes sec, uint8 expansion, time_t mute_time,
                      LocaleConstant locale, const BigNumber& sessionKey,
                      warden::AdmissionData&& admission,
-                     warden::WardenAdmissionContext admissionContext);
+                     warden::WardenAdmissionContext admissionContext,
+                     proto::ConnectionProfile profile = proto::ConnectionProfile::Stock);
+
+        proto::ConnectionProfile GetClientProfile() const { return m_clientProfile; }
+        bool CanUseCharacterClass(uint32 playerClass) const;
+        void HandleCoaReplace(WorldPacket& packet);
 
         /**
          * @brief Destructor
@@ -531,8 +539,8 @@ class WorldSession
         void SendAuctionBidderNotification(AuctionEntry* auction);
         void SendAuctionOwnerNotification(AuctionEntry* auction);
         void SendAuctionRemovedNotification(AuctionEntry* auction);
-        static void SendAuctionOutbiddedMail(AuctionEntry* auction);
-        void SendAuctionCancelledToBidderMail(AuctionEntry* auction);
+        static bool SendAuctionOutbiddedMail(AuctionEntry* auction, PlayerPersistence::InventoryTransaction<Player>& transaction);
+        bool SendAuctionCancelledToBidderMail(AuctionEntry* auction, PlayerPersistence::InventoryTransaction<Player>& transaction);
         void BuildListAuctionItems(std::vector<AuctionEntry*> const& auctions, WorldPacket& data, std::wstring const& searchedname, uint32 listfrom, uint32 levelmin,
                                    uint32 levelmax, uint32 usable, uint32 inventoryType, uint32 itemClass, uint32 itemSubClass, uint32 quality, uint32& count, uint32& totalcount, bool isFull);
 

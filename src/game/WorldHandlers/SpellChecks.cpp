@@ -44,6 +44,8 @@
 #include "ObjectMgr.h"
 #include "SpellMgr.h"
 #include "Player.h"
+#include "ComboRules.h"
+#include "SpellResourceContext.h"
 #include "Pet.h"
 #include "Unit.h"
 #include "DynamicObject.h"
@@ -74,8 +76,9 @@
  */
 SpellCastResult Spell::CheckCast(bool strict)
 {
+    if (auto result = CheckCoaCombatRules(); result != SPELL_CAST_OK) { return result; }
     // check cooldowns to prevent cheating (ignore passive spells, that client side visual only)
-    if (m_caster->GetTypeId() == TYPEID_PLAYER && !m_spellInfo->HasAttribute(SPELL_ATTR_PASSIVE) &&
+    if (!m_coaLinkedPrepared && m_caster->GetTypeId() == TYPEID_PLAYER && !m_spellInfo->HasAttribute(SPELL_ATTR_PASSIVE) &&
         ((Player*)m_caster)->HasSpellCooldown(m_spellInfo->ID))
     {
         if (m_triggeredByAuraSpell)
@@ -195,8 +198,10 @@ SpellCastResult Spell::CheckCast(bool strict)
             }
         }
 
-        if (!m_IsTriggeredSpell && NeedsComboPoints(m_spellInfo) && !m_caster->IsIgnoreUnitState(m_spellInfo, IGNORE_UNIT_TARGET_STATE) &&
-            (!m_targets.getUnitTarget() || m_targets.getUnitTarget()->GetObjectGuid() != ((Player*)m_caster)->GetComboTargetGuid()))
+        if (!ComboRules::CanFinish(NeedsComboPoints(m_spellInfo), m_IsTriggeredSpell,
+            m_caster->IsIgnoreUnitState(m_spellInfo, IGNORE_UNIT_TARGET_STATE),
+            static_cast<Player*>(m_caster)->GetComboPoints(), m_targets.getUnitTarget() &&
+            m_targets.getUnitTarget()->GetObjectGuid() == static_cast<Player*>(m_caster)->GetComboTargetGuid()))
         {
             // warrior not have real combo-points at client side but use this way for mark allow Overpower use
             return m_caster->getClass() == CLASS_WARRIOR ? SPELL_FAILED_CASTER_AURASTATE : SPELL_FAILED_NO_COMBO_POINTS;
@@ -2312,7 +2317,7 @@ uint32 Spell::CalculatePowerCost(SpellEntry const* spellInfo, Unit* caster, Spel
 SpellCastResult Spell::CheckPower()
 {
     // item cast not used power
-    if (m_CastItem)
+    if (!SpellResourceContext::PowerCost{m_CastItem != nullptr, m_triggeredByAuraSpell != nullptr}.Checks())
     {
         return SPELL_CAST_OK;
     }

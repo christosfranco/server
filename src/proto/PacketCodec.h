@@ -50,6 +50,7 @@ namespace proto
     enum class DecodeStatus
     {
         Ok,         ///< Bytes consumed; zero or more complete packets produced.
+        Stopped,    ///< Packet handler declined further input; remainder discarded.
         Malformed   ///< Protocol violation. The caller must drop the connection.
     };
 
@@ -77,6 +78,8 @@ namespace proto
             /// Encrypts an outgoing header in place, whose length varies (4 or 5).
             typedef std::function<void(uint8* header, size_t len)> HeaderEncryptor;
 
+            typedef std::function<bool(WorldPacket&& packet)> PacketHandler;
+
             /**
              * @param decryptor Header decryption hook. May be empty, in which case
              *                  headers are read as plain text -- which is the state
@@ -96,6 +99,12 @@ namespace proto
              */
             DecodeStatus Feed(const uint8* data, size_t len,
                               std::vector<WorldPacket>& out);
+
+            /// Dispatch each packet before reading the next header. The handler
+            /// may install a decryptor; false stops this feed without consuming
+            /// its remaining bytes. State is reset before calling the handler.
+            DecodeStatus Feed(const uint8* data, size_t len,
+                              const PacketHandler& handler);
 
             /**
              * @brief Serialise a packet for the wire: header followed by payload.

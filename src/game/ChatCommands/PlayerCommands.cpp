@@ -131,7 +131,12 @@ bool ChatHandler::HandleCharacterEraseCommand(char* args)
     std::string account_name;
     sAccountMgr.GetName(account_id, account_name);
 
-    Player::DeleteFromDB(target_guid, account_id, true, true);
+    if (!Player::DeleteFromDB(target_guid, account_id, true, true))
+    {
+        SendSysMessage("Character deletion refused; authoritative guild bank recovery required.");
+        SetSentErrorMessage(true);
+        return false;
+    }
     PSendSysMessage(LANG_CHARACTER_DELETED, target_name.c_str(), target_guid.GetCounter(), account_name.c_str(), account_id);
     return true;
 }
@@ -191,7 +196,10 @@ bool ChatHandler::HandleCharacterLevelCommand(char* args)
         newlevel = STRONG_MAX_LEVEL;
     }
 
-    HandleCharacterLevel(target, target_guid, oldlevel, newlevel);
+    if (!HandleCharacterLevel(target, target_guid, oldlevel, newlevel))
+    {
+        return false;
+    }
 
     if (!m_session || m_session->GetPlayer() != target)     // including player==NULL
     {
@@ -502,15 +510,19 @@ bool ChatHandler::HandleCharacterDeletedDeleteCommand(char* args)
         return false;
     }
 
-    SendSysMessage(LANG_CHARACTER_DELETED_DELETE);
-    HandleCharacterDeletedListHelper(foundList);
-
     // Call the appropriate function to delete them (current account for deleted characters is 0)
     for (DeletedInfoList::const_iterator itr = foundList.begin(); itr != foundList.end(); ++itr)
     {
-        Player::DeleteFromDB(ObjectGuid(HIGHGUID_PLAYER, itr->lowguid), 0, false, true);
+        if (!Player::DeleteFromDB(ObjectGuid(HIGHGUID_PLAYER, itr->lowguid), 0, false, true))
+        {
+            SendSysMessage("Character deletion refused; authoritative guild bank recovery required.");
+            SetSentErrorMessage(true);
+            return false;
+        }
     }
 
+    SendSysMessage(LANG_CHARACTER_DELETED_DELETE);
+    HandleCharacterDeletedListHelper(foundList);
     return true;
 }
 
@@ -650,11 +662,23 @@ bool ChatHandler::HandleCharacterDeletedOldCommand(char* args)
     CommandTable : commandTable
  ***********************************************************************/
 
-void ChatHandler::HandleCharacterLevel(Player* player, ObjectGuid player_guid, uint32 oldlevel, uint32 newlevel)
+bool ChatHandler::HandleCharacterLevel(Player* player, ObjectGuid player_guid, uint32 oldlevel, uint32 newlevel)
 {
     if (player)
     {
+        if (player->IsCoaManaged() && oldlevel == newlevel && !player->ChangeCoaLevel(newlevel))
+        {
+            SendSysMessage("Native CoA level/XP change failed; no success was recorded.");
+            SetSentErrorMessage(true);
+            return false;
+        }
         player->SetLevel(newlevel);
+        if (player->getLevel() != newlevel)
+        {
+            SendSysMessage("Level change rejected. Native CoA requires a valid build at a level from 1 through 60.");
+            SetSentErrorMessage(true);
+            return false;
+        }
         player->InitTalentForLevel();
         player->SetUInt32Value(PLAYER_XP, 0);
 
@@ -676,12 +700,31 @@ void ChatHandler::HandleCharacterLevel(Player* player, ObjectGuid player_guid, u
     }
     else
     {
-        // update level and XP at level, all other will be updated at loading
-        CharacterDatabase.PExecute("UPDATE `characters` SET `level` = '%u', `xp` = 0 WHERE `guid` = '%u'", newlevel, player_guid.GetCounter());
+        std::unique_ptr<QueryResult> row(CharacterDatabase.PQuery("SELECT class FROM characters WHERE guid=%u", player_guid.GetCounter()));
+        if (!row)
+        {
+            SendSysMessage("Offline level change failed: character lookup unavailable.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+        uint32 playerClass = row->Fetch()[0].GetUInt32();
+        if (!AdmitCharacterClass(proto::ConnectionProfile::Stock, playerClass, false))
+        {
+            SendSysMessage("Offline native CoA leveling is unsupported. Log the character in with the native client and retry the level command.");
+            SetSentErrorMessage(true);
+            return false;
+        }
+        // Recheck the stock class on execution too; never race a native-class change.
+        if (!CharacterDatabase.PExecute("UPDATE `characters` SET `level`=%u, `xp`=0 WHERE `guid`=%u AND `class`=%u AND `class` BETWEEN 1 AND 11",
+            newlevel, player_guid.GetCounter(), playerClass))
+        {
+            SendSysMessage("Offline level change could not be queued.");
+            SetSentErrorMessage(true);
+            return false;
+        }
     }
+    return true;
 }
-
-
 
 
 

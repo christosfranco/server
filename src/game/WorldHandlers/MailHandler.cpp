@@ -51,6 +51,8 @@
 #include "ObjectMgr.h"
 #include "Item.h"
 #include "Player.h"
+#include "InventoryTransaction.h"
+#include <algorithm>
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -276,7 +278,7 @@ void WorldSession::HandleSendMail(WorldPacket& recv_data)
         Item* item = pl->GetItemByGuid(itemGuids[i]);
 
         // prevent sending bag with items (cheat: can be placed in bag after adding equipped empty bag to mail)
-        if (!item)
+        if (!item || std::find(items, items + i, item) != items + i)
         {
             pl->SendMailResult(0, MAIL_SEND, MAIL_ERR_MAIL_ATTACHMENT_INVALID);
             return;
@@ -309,10 +311,14 @@ void WorldSession::HandleSendMail(WorldPacket& recv_data)
         items[i] = item;
     }
 
-    pl->SendMailResult(0, MAIL_SEND, MAIL_OK);
+    PlayerInventoryTransaction transaction(CharacterDatabase, {pl});
+    if (!transaction.Begin())
+    {
+        pl->SendMailResult(0, MAIL_SEND, MAIL_ERR_INTERNAL_ERROR);
+        return;
+    }
 
     pl->ModifyMoney(-int32(reqmoney));
-    pl->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_GOLD_SPENT_FOR_MAIL, cost);
 
     bool needItemDelay = false;
 
@@ -332,12 +338,14 @@ void WorldSession::HandleSendMail(WorldPacket& recv_data)
                 }
 
                 pl->MoveItemFromInventory(items[i]->GetBagSlot(), item->GetSlot(), true);
-                CharacterDatabase.BeginTransaction();
+                transaction.OnFailure([item] { delete item; });
                 item->DeleteFromInventoryDB();              // deletes item from character's inventory
                 item->SaveToDB();                           // recursive and not have transaction guard into self, item not in inventory and can be save standalone
                 // owner in data will set at mail receive and item extracting
-                CharacterDatabase.PExecute("UPDATE `item_instance` SET `owner_guid` = '%u' WHERE `guid`='%u'", rc.GetCounter(), item->GetGUIDLow());
-                CharacterDatabase.CommitTransaction();
+                if (!CharacterDatabase.PExecute("UPDATE `item_instance` SET `owner_guid` = '%u' WHERE `guid`='%u'", rc.GetCounter(), item->GetGUIDLow()))
+                {
+                    return;
+                }
 
                 draft.AddItem(item);
             }
@@ -357,14 +365,16 @@ void WorldSession::HandleSendMail(WorldPacket& recv_data)
     uint32 deliver_delay = needItemDelay ? sWorld.getConfig(CONFIG_UINT32_MAIL_DELIVERY_DELAY) : 0;
 
     // will delete item or place to receiver mail list
-    draft
+    if (!draft
     .SetMoney(money)
     .SetCOD(COD)
-    .SendMailTo(MailReceiver(receive, rc), pl, body.empty() ? MAIL_CHECK_MASK_COPIED : MAIL_CHECK_MASK_HAS_BODY, deliver_delay);
-
-    CharacterDatabase.BeginTransaction();
-    pl->SaveInventoryAndGoldToDB();
-    CharacterDatabase.CommitTransaction();
+    .QueueMailTo(transaction, MailReceiver(receive, rc), pl, body.empty() ? MAIL_CHECK_MASK_COPIED : MAIL_CHECK_MASK_HAS_BODY, deliver_delay) ||
+        !transaction.Commit())
+    {
+        return;
+    }
+    pl->SendMailResult(0, MAIL_SEND, MAIL_OK);
+    pl->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_GOLD_SPENT_FOR_MAIL, cost);
 }
 
 /**
@@ -547,11 +557,23 @@ void WorldSession::HandleMailTakeItem(WorldPacket& recv_data)
     }
 
     Item* it = pl->GetMItem(itemId);
+    if (!it || std::none_of(m->items.begin(), m->items.end(), [itemId](MailItemInfo const& info)
+        { return info.item_guid == itemId; }))
+    {
+        pl->SendMailResult(mailId, MAIL_ITEM_TAKEN, MAIL_ERR_INTERNAL_ERROR);
+        return;
+    }
 
     ItemPosCountVec dest;
     InventoryResult msg = _player->CanStoreItem(NULL_BAG, NULL_SLOT, dest, it, false);
     if (msg == EQUIP_ERR_OK)
     {
+        PlayerInventoryTransaction transaction(CharacterDatabase, {pl});
+        if (!transaction.Begin())
+        {
+            pl->SendMailResult(mailId, MAIL_ITEM_TAKEN, MAIL_ERR_INTERNAL_ERROR);
+            return;
+        }
         m->RemoveItem(itemId);
         m->removedItems.push_back(itemId);
 
@@ -591,9 +613,12 @@ void WorldSession::HandleMailTakeItem(WorldPacket& recv_data)
             // check player existence
             if (sender || sender_accId)
             {
-                MailDraft(m->subject, "")
+                if (!MailDraft(m->subject, "")
                 .SetMoney(m->COD)
-                .SendMailTo(MailReceiver(sender, sender_guid), _player, MAIL_CHECK_MASK_COD_PAYMENT);
+                .QueueMailTo(transaction, MailReceiver(sender, sender_guid), _player, MAIL_CHECK_MASK_COD_PAYMENT))
+                {
+                    return;
+                }
             }
 
             pl->ModifyMoney(-int32(m->COD));
@@ -606,10 +631,11 @@ void WorldSession::HandleMailTakeItem(WorldPacket& recv_data)
         uint32 count = it->GetCount();                      // save counts before store and possible merge with deleting
         pl->MoveItemToInventory(dest, it, true);
 
-        CharacterDatabase.BeginTransaction();
-        pl->SaveInventoryAndGoldToDB();
         pl->_SaveMail();
-        CharacterDatabase.CommitTransaction();
+        if (!transaction.Commit())
+        {
+            return;
+        }
 
         pl->SendMailResult(mailId, MAIL_ITEM_TAKEN, MAIL_OK, 0, itemId, count);
     }
@@ -642,7 +668,12 @@ void WorldSession::HandleMailTakeMoney(WorldPacket& recv_data)
         return;
     }
 
-    pl->SendMailResult(mailId, MAIL_MONEY_TAKEN, MAIL_OK);
+    PlayerInventoryTransaction transaction(CharacterDatabase, {pl});
+    if (!transaction.Begin())
+    {
+        pl->SendMailResult(mailId, MAIL_MONEY_TAKEN, MAIL_ERR_INTERNAL_ERROR);
+        return;
+    }
 
     pl->ModifyMoney(m->money);
     m->money = 0;
@@ -650,10 +681,11 @@ void WorldSession::HandleMailTakeMoney(WorldPacket& recv_data)
     pl->m_mailsUpdated = true;
 
     // save money and mail to prevent cheating
-    CharacterDatabase.BeginTransaction();
-    pl->SaveGoldToDB();
     pl->_SaveMail();
-    CharacterDatabase.CommitTransaction();
+    if (transaction.Commit())
+    {
+        pl->SendMailResult(mailId, MAIL_MONEY_TAKEN, MAIL_OK);
+    }
 }
 
 /**

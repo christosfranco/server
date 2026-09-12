@@ -44,8 +44,10 @@
 #include "Timer.h"
 #include "Policies/Singleton.h"
 #include "SharedDefines.h"
+#include "CoaStarter.h"
 
 #include <map>
+#include <memory>
 #include <set>
 #include <list>
 
@@ -62,6 +64,7 @@ class WorldSession;
 class Player;
 class SqlResultQueue;
 class QueryResult;
+namespace coa { class Catalog; }
 
 // ServerMessages.dbc
 enum ServerMessageType
@@ -412,6 +415,8 @@ enum eConfigBoolValues
 
     // Movement arbiter
     CONFIG_BOOL_MOVEMENT_ARBITER_SHADOW,
+
+    CONFIG_BOOL_ASCENSION_STOCK_AUTH_COMPATIBILITY,
     CONFIG_BOOL_VALUE_COUNT
 };
 
@@ -644,6 +649,23 @@ class World
         /// Get a server configuration element (see #eConfigBoolValues)
         bool getConfig(eConfigBoolValues index) const { return m_configBoolValues[index]; }
 
+        std::shared_ptr<coa::Catalog const> GetCoaCatalog() const { return m_coaCatalog; }
+        coa::StarterPlan const* GetCoaStarter(uint32 playerClass, uint32 race) const
+        {
+            auto found = m_coaStarters.find({playerClass, race});
+            return found == m_coaStarters.end() ? nullptr : &found->second;
+        }
+        void InitializeCoaStarters();
+        std::shared_ptr<const WorldPacket> GetAscensionKnownAddons() const
+        {
+            return std::atomic_load(&m_ascensionKnownAddons);
+        }
+
+        const std::string& GetRequiredClientUpdate() const
+        {
+            return m_requiredClientUpdate;
+        }
+
         /// Get configuration about force-loaded maps
         bool isForceLoadMap(uint32 id) const { return m_configForceLoadMapIds.find(id) != m_configForceLoadMapIds.end(); }
 
@@ -764,6 +786,10 @@ class World
         int32 m_configInt32Values[CONFIG_INT32_VALUE_COUNT];
         float m_configFloatValues[CONFIG_FLOAT_VALUE_COUNT];
         bool m_configBoolValues[CONFIG_BOOL_VALUE_COUNT];
+        std::shared_ptr<const WorldPacket> m_ascensionKnownAddons;
+        std::string m_requiredClientUpdate; ///< Written only before network startup.
+        std::shared_ptr<coa::Catalog const> m_coaCatalog;
+        std::map<std::pair<uint32, uint32>, coa::StarterPlan> m_coaStarters;
 
         int32 m_playerLimit;
         LocaleConstant m_defaultDbcLocale;                  // from config for one from loaded DBC locales

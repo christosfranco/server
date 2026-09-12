@@ -380,6 +380,7 @@ class Item : public Object
         bool IsEquipped() const;
 
         uint32 GetSkill();
+        static uint32 GetSkill(ItemPrototype const* proto);
         uint32 GetSpell();
 
         // RandomPropertyId (signed but stored as unsigned)

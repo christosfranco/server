@@ -203,8 +203,8 @@ Unit* DynamicObject::GetCaster() const
 void DynamicObject::Update(uint32 /*update_diff*/, uint32 p_time)
 {
     // caster can be not in world at time dynamic object update, but dynamic object not yet deleted in Unit destructor
-    Unit* caster = GetCaster();
-    if (!caster)
+    Unit* caster = m_coaOwnerEpoch ? GetMap()->GetUnit(GetCasterGuid()) : GetCaster();
+    if (!caster || (m_coaOwnerEpoch && (!caster->IsAlive() || caster->GetCombatEpoch() != m_coaOwnerEpoch)))
     {
         Delete();
         return;

@@ -72,6 +72,7 @@ namespace
         BigNumber      sessionKey;
         std::string    platform;
         std::string    clientLocale;
+        proto::ConnectionProfile profile = proto::ConnectionProfile::Stock;
     };
 
     /**
@@ -237,22 +238,44 @@ proto::AuthLookup WorldGateway::LookupAccount(const proto::AuthRequest& request)
 
     result.status     = proto::AuthStatus::Ok;
     result.sessionKey = row->sessionKey;
+    result.profile = SelectConnectionProfile(request.build,
+        sWorld.getConfig(CONFIG_BOOL_ASCENSION_STOCK_AUTH_COMPATIBILITY));
+    row->profile = result.profile;
+    if (result.profile == proto::ConnectionProfile::AscensionStockAuthCoA)
+    {
+        if (!sWorld.GetCoaCatalog())
+        {
+            result.status = proto::AuthStatus::Unavailable;
+            return result;
+        }
+        result.knownAddons = sWorld.GetAscensionKnownAddons();
+    }
     result.context    = row;
     return result;
 }
 
-proto::SessionId WorldGateway::Attach(const proto::AuthRequest& request,
-                                      const std::shared_ptr<proto::IClientLink>& link,
-                                      const std::shared_ptr<proto::AuthContext>& context)
+proto::AttachResult WorldGateway::Attach(const proto::AuthRequest& request,
+                                        const std::shared_ptr<proto::IClientLink>& link,
+                                        const std::shared_ptr<proto::AuthContext>& context)
 {
-    EnsureDbThreadRegistered();
-
     std::shared_ptr<AccountRow> row =
         std::dynamic_pointer_cast<AccountRow>(context);
     if (!link || !row)
     {
-        return proto::INVALID_SESSION_ID;
+        return {};
     }
+
+    // After proof, but before attach-side writes, session construction or queues.
+    // The startup-only requirement cannot change underneath a queued login.
+    const auto updateAdmission = CheckRequiredClientUpdate(request.addonData,
+        sWorld.GetRequiredClientUpdate());
+    if (!updateAdmission)
+    {
+        sLog.outError("%s", updateAdmission.Diagnostic().c_str());
+        return {proto::INVALID_SESSION_ID, proto::AuthStatus::Failed};
+    }
+
+    EnsureDbThreadRegistered();
 
     // The proof has already been verified by this point, so recording the address
     // here is recording an authenticated login rather than an attempt.
@@ -262,7 +285,7 @@ proto::SessionId WorldGateway::Attach(const proto::AuthRequest& request,
     stmt.PExecute(request.peerAddress.c_str(), request.account.c_str());
 
     std::shared_ptr<SessionMailbox> mailbox =
-        std::make_shared<SessionMailbox>();
+        std::make_shared<SessionMailbox>(row->profile);
 
     // Capture one policy for both the history query and eventual admission.
     // Queue residence may span a reload, but must never mix two snapshots.
@@ -304,13 +327,13 @@ proto::SessionId WorldGateway::Attach(const proto::AuthRequest& request,
         sLog.outError("Warden admission key extraction failed for account %u.",
             row->id);
         link->Close();
-        return proto::INVALID_SESSION_ID;
+        return {};
     }
     std::unique_ptr<WorldSession> session =
         std::make_unique<WorldSession>(
             row->id, link, mailbox, row->security, row->expansion,
             row->muteTime, row->locale, row->sessionKey,
-            std::move(admission), std::move(admissionContext));
+            std::move(admission), std::move(admissionContext), row->profile);
 
     session->LoadGlobalAccountData();
     session->LoadTutorialsData();
@@ -326,7 +349,7 @@ proto::SessionId WorldGateway::Attach(const proto::AuthRequest& request,
 
     if (link->IsClosed())
     {
-        return proto::INVALID_SESSION_ID;
+        return {};
     }
 
     proto::SessionId id;
@@ -345,8 +368,8 @@ proto::SessionId WorldGateway::Attach(const proto::AuthRequest& request,
     }
 
     // AddSession answers the client itself, with either AUTH_OK or a queue
-    // position. The cipher was armed before we were called, so that reply goes
-    // out encrypted -- which is the one ordering constraint across this seam.
+    // position. The connection applied its wire profile before we were called,
+    // so that reply already uses the selected header cipher policy.
     // AddSession also answers the addon block, via SendAddonsInfo() over the
     // list ReadAddonsInfo() just parsed -- so nothing more is owed here.
     WorldSession* published = session.release();
@@ -361,7 +384,7 @@ proto::SessionId WorldGateway::Attach(const proto::AuthRequest& request,
         throw;
     }
 
-    return id;
+    return {id};
 }
 
 void WorldGateway::TracePacket(proto::SessionId session, const WorldPacket& packet,

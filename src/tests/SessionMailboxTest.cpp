@@ -25,6 +25,7 @@
 
 #include "TestHarness.h"
 #include "SessionMailbox.h"
+#include "Opcodes.h"
 
 #include <atomic>
 #include <memory>
@@ -74,6 +75,80 @@ TEST(SessionMailbox_close_is_idempotent_and_drains)
     CHECK(mailbox.IsClosed());
     CHECK(!mailbox.Next(raw));
     CHECK(!mailbox.Enqueue(MakePacket(5, 0x55)));
+}
+
+TEST(SessionMailbox_accepts_last_opcode_and_transfers_ownership)
+{
+    CHECK_EQ(NUM_MSG_TYPES, 0x529);
+    SessionMailbox mailbox;
+    std::unique_ptr<WorldPacket> packet = MakePacket(0x528, 0x28);
+    WorldPacket* original = packet.get();
+    REQUIRE(mailbox.Enqueue(std::move(packet)));
+    CHECK(!packet);
+
+    WorldPacket* raw = nullptr;
+    REQUIRE(mailbox.Next(raw));
+    std::unique_ptr<WorldPacket> received(raw);
+    CHECK(received.get() == original);
+    CHECK_EQ(received->GetOpcode(), 0x528);
+    CHECK_EQ((*received)[0], 0x28);
+    CHECK(!mailbox.Next(raw));
+}
+
+TEST(SessionMailbox_rejects_unknown_opcodes_before_filtering)
+{
+    struct Filter
+    {
+        unsigned calls = 0;
+
+        bool Process(WorldPacket* packet)
+        {
+            ++calls;
+            CHECK(packet->GetOpcode() < NUM_MSG_TYPES);
+            return true;
+        }
+    } filter;
+
+    SessionMailbox mailbox;
+    CHECK(mailbox.Enqueue(MakePacket(1, 0x11)));
+    for (uint16 opcode : {0x529, 0x53b, 0xffff})
+    {
+        std::unique_ptr<WorldPacket> packet = MakePacket(opcode, 0xff);
+        CHECK(!mailbox.Enqueue(std::move(packet)));
+        CHECK(!packet);
+    }
+    CHECK(!mailbox.IsClosed());
+    CHECK(mailbox.Enqueue(MakePacket(0x528, 0x28)));
+
+    WorldPacket* raw = nullptr;
+    REQUIRE(mailbox.Next(raw, filter));
+    std::unique_ptr<WorldPacket> first(raw);
+    CHECK_EQ(first->GetOpcode(), 1);
+    REQUIRE(mailbox.Next(raw, filter));
+    std::unique_ptr<WorldPacket> second(raw);
+    CHECK_EQ(second->GetOpcode(), 0x528);
+    while (mailbox.Next(raw, filter))
+    {
+        delete raw;
+        CHECK(false);
+    }
+    CHECK_EQ(filter.calls, 2u);
+}
+
+TEST(SessionMailbox_rejected_packets_are_not_queued)
+{
+    SessionMailbox mailbox;
+    CHECK(!mailbox.Enqueue(nullptr));
+    for (uint16 opcode : {0x529, 0x53b, 0xffff})
+    {
+        CHECK(!mailbox.Enqueue(MakePacket(opcode, 0xff)));
+        WorldPacket* raw = nullptr;
+        const bool received = mailbox.Next(raw);
+        std::unique_ptr<WorldPacket> unexpected(raw);
+        CHECK(!received);
+        CHECK(!unexpected);
+    }
+    CHECK(!mailbox.IsClosed());
 }
 
 TEST(SessionMailbox_close_racing_producers_leaves_no_packets)

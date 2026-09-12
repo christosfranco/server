@@ -27,10 +27,12 @@
 #define MANGOS_WORLDGATEWAYAUTH_H
 
 #include "Auth/BigNumber.h"
+#include "IWorldGateway.h"
 #include "WardenProtocol.h"
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 /** Append-only account projection used by WorldGateway::LookupAccount. */
 enum class WorldGatewayAccountField : std::size_t
@@ -55,6 +57,59 @@ constexpr std::size_t WorldGatewayAccountFieldIndex(
 }
 
 bool IsSupportedAccountClientOS(const std::string& os);
+
+proto::ConnectionProfile SelectConnectionProfile(uint32 build,
+    bool ascensionStockAuthCompatibility);
+
+// Pinned patch-B realm-1 UIParent lifecycle + CoA Collections tabs + TOC closure.
+// :1 is explicit local client-UI trust policy, not a recovered vendor flag.
+inline constexpr char ASCENSION_KNOWN_ADDONS_DEFAULT[] =
+    "Ascension_Collections:1,AscensionUI:1,Ascension_TalentUI:1,Ascension_CoATalents:1,"
+    "Ascension_Warmode:1,Ascension_NamePlates:1,Ascension_NewPlayerExperience:1,"
+    "Ascension_MythicPlus:1,Ascension_Manastorm:1,Ascension_VanityCollection:1,"
+    "Ascension_AppearanceUI:1";
+
+/** Empty disables; invalid manifests throw std::invalid_argument, never truncate. */
+std::shared_ptr<const WorldPacket> BuildAscensionKnownAddons(
+    const std::string& manifest);
+
+/** Nonempty managed addon name: bounded channel token and canonical sequence. */
+bool IsValidClientUpdateMarker(const std::string& marker);
+
+enum class ClientUpdateStatus
+{
+    Disabled,
+    Accepted,
+    InvalidRequirement,
+    MissingMarker,
+    WrongMarker,
+    DuplicateMarker,
+    CompressedFormat,
+    Size,
+    Count,
+    RecordFormat,
+    Trailer
+};
+
+struct ClientUpdateAdmission
+{
+    ClientUpdateStatus status;
+    uint32 addonCount = 0;  ///< Only a count that passed the inflated-size bound.
+    uint32 markerCount = 0;
+    bool matched = false;
+
+    explicit operator bool() const
+    {
+        return status == ClientUpdateStatus::Disabled || status == ClientUpdateStatus::Accepted;
+    }
+
+    /** Fixed codes and bounded counts only; no input strings retained or logged. */
+    std::string Diagnostic() const;
+};
+
+/** Empty requirement preserves legacy parsing; otherwise validate the full block. */
+ClientUpdateAdmission CheckRequiredClientUpdate(const std::vector<uint8>& addonData,
+    const std::string& required);
 
 /** Copies one fixed-width Warden key while retaining the BigNumber for HMAC. */
 warden::AdmissionData BuildWardenAdmissionData(uint32 build,

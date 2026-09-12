@@ -561,7 +561,7 @@ void Spell::AddUnitTarget(Unit* pVictim, SpellEffectIndex effIndex)
     target.processed  = false;                              // Effects not applied on target
 
     // Calculate hit result
-    target.missCondition = m_caster->SpellHitResult(pVictim, m_spellInfo, m_canReflect);
+    target.missCondition = m_caster->SpellHitResult(pVictim, m_spellInfo, m_canReflect, !UsesCoaCombatRules() && !m_coaLinkedPrepared);
 
     // spell fly from visual cast object
     WorldObject* affectiveObject = GetAffectiveCasterObject();
@@ -609,7 +609,7 @@ void Spell::AddUnitTarget(Unit* pVictim, SpellEffectIndex effIndex)
     if (target.missCondition == SPELL_MISS_REFLECT)
     {
         // Calculate reflected spell result on caster
-        target.reflectResult =  m_caster->SpellHitResult(m_caster, m_spellInfo, m_canReflect);
+        target.reflectResult =  m_caster->SpellHitResult(m_caster, m_spellInfo, m_canReflect, !UsesCoaCombatRules() && !m_coaLinkedPrepared);
 
         if (target.reflectResult == SPELL_MISS_REFLECT)     // Impossible reflect again, so simply deflect spell
         {

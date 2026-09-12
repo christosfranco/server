@@ -59,6 +59,9 @@
 #include <utility>
 #include <queue>
 #include "Common/ServerDefines.h"
+#include "CoaState.h"
+#include "CoaCombatRules.h"
+#include "CoaStarter.h"
 #include "Utilities/Errors.h"
 #include "Platform/Define.h"
 #include "Common/TimeConstants.h"
@@ -98,6 +101,7 @@
 #include<vector>
 
 struct Mail;
+namespace PlayerPersistence { template<class Participant> class InventoryTransaction; }
 class Channel;
 class DynamicObject;
 class Creature;
@@ -2133,12 +2137,19 @@ class Player : public Unit
 
         // Save the player to the database
         void SaveToDB();
+        bool CreateCoaCharacter(uint32 playerClass, std::function<bool()> const& prepare);
+        bool IsCoaCreationPending() const { return m_coaCreating; }
 
         // Save the inventory and gold to the database
-        void SaveInventoryAndGoldToDB(); // fast save function for item/money cheating preventing
+        [[nodiscard]] bool SaveInventoryAndGoldToDB();
+        bool CanSaveInventory();
+        bool IsSaveBlocked() const { return m_saveBlocked || m_coaFailed; }
+        void BlockSavesAndDisconnect();
+        PlayerPersistence::InventoryTransaction<Player>* GetInventoryTransaction() const { return m_inventoryTransaction; }
+        void SetInventoryTransaction(PlayerPersistence::InventoryTransaction<Player>* transaction) { m_inventoryTransaction = transaction; }
 
         // Save the gold to the database
-        void SaveGoldToDB();
+        [[nodiscard]] bool SaveGoldToDB();
 
         // Set a uint32 value in an array
         static void SetUInt32ValueInArray(Tokens& data, uint16 index, uint32 value);
@@ -2147,7 +2158,7 @@ class Player : public Unit
         static void SavePositionInDB(ObjectGuid guid, uint32 mapid, float x, float y, float z, float o, uint32 zone);
 
         // Delete a player from the database
-        static void DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRealmChars = true, bool deleteFinally = false);
+        [[nodiscard]] static bool DeleteFromDB(ObjectGuid playerguid, uint32 accountId, bool updateRealmChars = true, bool deleteFinally = false);
 
         // The `character_*` side tables whose primary key is the player's low
         // guid. This is the authority both DeleteFromDB (drop the character)
@@ -2203,6 +2214,8 @@ class Player : public Unit
         void RegenerateAll(uint32 diff = REGEN_TIME_FULL);
         void Regenerate(Powers power, uint32 diff);
         void RegenerateHealth(uint32 diff);
+        void ResetPowerRegen();
+        void ClampPowerRegen(Powers power, uint32 current, uint32 maximum);
         void setRegenTimer(uint32 time)
         {
             m_regenTimer = time;
@@ -2250,7 +2263,7 @@ class Player : public Unit
         ObjectGuid const& GetComboTargetGuid() const { return m_comboTargetGuid; }
 
         // Add combo points to the player
-        void AddComboPoints(Unit* target, int8 count);
+        void AddComboPoints(Unit* target, int32 count);
 
         // Clear the player's combo points
         void ClearComboPoints();
@@ -2381,6 +2394,41 @@ class Player : public Unit
         // Learn the player's default spells
         void learnDefaultSpells();
         void LearnClassLevelSpells();
+        bool IsCoaManaged() const;
+        coa::StarterPlan const* GetCoaStarter() const;
+        uint32 GetCoaBaseMana(uint32 nativeMana) const;
+        uint32 GetCoaCreatePower(Powers power) const;
+        void RefreshCoaPowerRequirements();
+        coa::combat::Context BuildCoaCombatContext() const;
+        bool IsCoaCombatAuthorized(uint32 source, uint32 resource = 0) const;
+        bool KnowsCoaCombatSpell(uint32 spell) const;
+        bool OnCoaCombatEvent(coa::combat::Event event);
+        void UpdateCoaCombatRules();
+        void InvalidateCoaCombatRules();
+        void SyncCoaCombatAuras();
+        bool CoaCombatPublishing() const { return m_coaCombatPublishing; }
+        void BeginCoaCombatCast() { m_coaCombatPublishing = true; }
+        void EndCoaCombatCast();
+        uint64 NextCoaCastId() { return ++m_coaCastId; }
+        void RefreshCoaCombatIntellect();
+        void RefreshCoaCombatAuthority();
+        friend class CoaCombatTransaction;
+        void UpdateCoaPowerCaps();
+        bool PrepareCoaStarterInfrastructure();
+        bool EquipCoaStarter();
+        bool CheckCoaStarterReady();
+        uint32 GetProgressionLevelCap() const;
+        bool IsCoaManagedSpell(uint32 spell) const;
+        bool IsCoaDefaultSpell(uint32 spell) const;
+        void RememberCoaIndependentSpell(uint32 spell);
+        void LearnCoaQuestSpells(SpellEntry const* reward, bool needsCast);
+        void RemoveCoaProjectionAuras(uint32 spell);
+        bool InitializeCoa(bool creating = false);
+        bool ReconcileCoaSpells();
+        bool ChangeCoaLevel(uint32 level);
+        bool ResetCoa(uint32 clearAtLogin);
+        bool SendCoaSnapshot();
+        void ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired);
 
         // Learn quest-rewarded spells
         void learnQuestRewardedSpells();
@@ -2416,9 +2464,9 @@ class Player : public Unit
 
         // Dual Spec
         uint8 GetActiveSpec() { return m_activeSpec; }
-        void SetActiveSpec(uint8 spec) { m_activeSpec = spec; }
+        void SetActiveSpec(uint8 spec) { if (!IsCoaManaged()) { m_activeSpec = spec; } }
         uint8 GetSpecsCount() { return m_specsCount; }
-        void SetSpecsCount(uint8 count) { m_specsCount = count; }
+        void SetSpecsCount(uint8 count) { if (!IsCoaManaged()) { m_specsCount = count; } }
         void ActivateSpec(uint8 specNum);
         void UpdateSpecCount(uint8 count);
 
@@ -3232,7 +3280,7 @@ class Player : public Unit
         void SetRegularAttackTime();
 
         // Set the base modifier value
-        void SetBaseModValue(BaseModGroup modGroup, BaseModType modType, float value) { m_auraBaseMod[modGroup][modType] = value; }
+        void SetBaseModValue(BaseModGroup modGroup, BaseModType modType, float value);
 
         // Handle the base modifier value
         void HandleBaseModValue(BaseModGroup modGroup, BaseModType modType, float amount, bool apply);
@@ -3976,6 +4024,9 @@ class Player : public Unit
 
         // Save player inventory to the database
         void _SaveInventory();
+        bool QueueCharacterSave(bool createOnly);
+        bool QueueValidatedCharacterSave(bool createOnly);
+        bool WithInventorySavePreflight(std::function<bool()> const& save);
 
         // Save player mail to the database
         void _SaveMail();
@@ -4051,6 +4102,19 @@ class Player : public Unit
 
         ObjectGuid m_comboTargetGuid; // Combo target GUID
         int8 m_comboPoints; // Combo points
+        double m_powerRegenRemainder[MAX_POWERS] = {};
+        uint8 m_coaRequiredPowers = 0;
+        uint32 m_coaPowerUpdateDepth = 0;
+        class CoaPowerUpdate
+        {
+        public:
+            explicit CoaPowerUpdate(Player& player);
+            ~CoaPowerUpdate();
+            CoaPowerUpdate(CoaPowerUpdate const&) = delete;
+            CoaPowerUpdate& operator=(CoaPowerUpdate const&) = delete;
+        private:
+            Player& m_player;
+        };
 
         QuestStatusMap mQuestStatus; // Quest status map
 
@@ -4058,6 +4122,25 @@ class Player : public Unit
 
         PlayerMails m_mail;
         PlayerSpellMap m_spells;
+        coa::State m_coaState;
+        coa::combat::State m_coaCombat;
+        std::set<uint32> m_coaCombatSpells;
+        bool m_coaCombatPublishing = false;
+        bool m_coaCombatDraining = false;
+        bool m_coaCombatRefreshingStat = false;
+        bool m_coaCombatInvalidating = false;
+        coa::combat::Bounded<coa::combat::Event, 32> m_coaCombatDeferred;
+        uint64 m_coaEventSequence = 0, m_coaCastId = 0;
+        int32 m_coaIntellect = 0;
+        bool m_coaCreating = false;
+        coa::Build m_coaBuild;
+        bool m_coaReady = false;
+        bool m_coaReconciling = false;
+        bool m_coaFailed = false;
+        bool m_saveBlocked = false;
+        PlayerPersistence::InventoryTransaction<Player>* m_inventoryTransaction = nullptr;
+        std::set<uint32> m_coaManagedSpells, m_coaManagedAuras, m_coaAllowedSpells;
+        std::set<uint32> m_coaIndependentRoots;
         PlayerTalentMap m_talents[MAX_TALENT_SPEC_COUNT];
         SpellCooldownMgr m_spellCooldownMgr;   // owns the spell-cooldown map + load/save/apply lifecycle
         uint32 m_lastPotionId;                              // last used health/mana potion in combat, that block next potion use
@@ -4071,7 +4154,8 @@ class Player : public Unit
 
         GlyphMgr m_glyphMgr;   // per-spec glyph state + Load/Save/Apply lifecycle
 
-        float m_auraBaseMod[BASEMOD_END][MOD_END];
+        float m_auraBaseMod[BASEMOD_END][MOD_END]{};
+        StatSystem::PercentModifier m_basePercentModifiers[BASEMOD_END]{};
         int16 m_baseRatingValue[MAX_COMBAT_RATING];
         uint16 m_baseSpellPower;
         uint16 m_baseFeralAP;

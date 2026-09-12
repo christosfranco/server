@@ -42,6 +42,8 @@
 #include "ObjectMgr.h"
 #include "SpellMgr.h"
 #include "Player.h"
+#include "PowerRules.h"
+#include "SpellResourceContext.h"
 #include "Pet.h"
 #include "Unit.h"
 #include "DynamicObject.h"
@@ -139,7 +141,7 @@ void Spell::TakeCastItem()
  */
 void Spell::TakePower()
 {
-    if (m_CastItem || m_triggeredByAuraSpell)
+    if (!SpellResourceContext::PowerCost{m_CastItem != nullptr, m_triggeredByAuraSpell != nullptr}.Debits())
     {
         return;
     }
@@ -147,7 +149,8 @@ void Spell::TakePower()
     // health as power used
     if (m_spellInfo->PowerType == POWER_HEALTH)
     {
-        m_caster->ModifyHealth(-(int32)m_powerCost);
+        m_caster->SetHealth(PowerRules::ApplyDelta(m_caster->GetHealth(), m_caster->GetMaxHealth(),
+            -int64_t(m_powerCost)));
         return;
     }
 
@@ -165,7 +168,7 @@ void Spell::TakePower()
         return;
     }
 
-    m_caster->ModifyPower(powerType, -(int32)m_powerCost);
+    m_caster->ApplyPowerMod(powerType, m_powerCost, false);
 
     // Set the five second timer
     if (powerType == POWER_MANA && m_powerCost > 0)

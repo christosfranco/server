@@ -58,3 +58,70 @@ TEST(SessionPingTracker_enforces_threshold_only_for_players)
     CHECK(!tracker.ShouldKick(0, true));
     CHECK(!tracker.ShouldKick(1, false));
 }
+
+TEST(SessionPingTracker_build12344_regular_player_five_second_cadence)
+{
+    SessionPingTracker tracker;
+    SessionPingTracker::Clock::time_point start(seconds(100));
+    for (int ping = 0; ping <= 12; ++ping)
+    {
+        CHECK_EQ(tracker.Record(start + seconds(5 * ping), seconds(4)), 0);
+        CHECK(!tracker.ShouldKick(2, true));
+    }
+}
+
+TEST(SessionPingTracker_build12344_rapid_abuse_still_kicks_players)
+{
+    SessionPingTracker tracker;
+    SessionPingTracker::Clock::time_point start(seconds(100));
+    CHECK_EQ(tracker.Record(start, seconds(4)), 0);
+    CHECK_EQ(tracker.Record(start + seconds(1), seconds(4)), 1);
+    CHECK(!tracker.ShouldKick(2, true));
+    CHECK_EQ(tracker.Record(start + seconds(2), seconds(4)), 2);
+    CHECK(!tracker.ShouldKick(2, true));
+    CHECK_EQ(tracker.Record(start + seconds(3), seconds(4)), 3);
+    CHECK(tracker.ShouldKick(2, true));
+    CHECK(!tracker.ShouldKick(0, true));
+    CHECK(!tracker.ShouldKick(2, false));
+    CHECK_EQ(tracker.Record(start + seconds(8), seconds(4)), 0);
+    CHECK(!tracker.ShouldKick(2, true));
+}
+
+TEST(SessionPingTracker_build12344_four_second_boundary)
+{
+    SessionPingTracker tracker;
+    SessionPingTracker::Clock::time_point now(seconds(100));
+    CHECK_EQ(tracker.Record(now, seconds(4)), 0);
+    now += seconds(4) - milliseconds(1);
+    CHECK_EQ(tracker.Record(now, seconds(4)), 1);
+    now += seconds(4);
+    CHECK_EQ(tracker.Record(now, seconds(4)), 0);
+    now += seconds(4) + milliseconds(1);
+    CHECK_EQ(tracker.Record(now, seconds(4)), 0);
+    CHECK(!tracker.ShouldKick(2, true));
+}
+
+TEST(SessionPingTracker_stock_five_second_cadence_still_kicks)
+{
+    SessionPingTracker tracker;
+    SessionPingTracker::Clock::time_point start(seconds(100));
+    CHECK_EQ(tracker.Record(start), 0);
+    CHECK_EQ(tracker.Record(start + seconds(5)), 1);
+    CHECK_EQ(tracker.Record(start + seconds(10)), 2);
+    CHECK(!tracker.ShouldKick(2, true));
+    CHECK_EQ(tracker.Record(start + seconds(15)), 3);
+    CHECK(tracker.ShouldKick(2, true));
+}
+
+TEST(SessionPingTracker_stock_twenty_seven_second_boundary)
+{
+    SessionPingTracker tracker;
+    SessionPingTracker::Clock::time_point now(seconds(100));
+    CHECK_EQ(tracker.Record(now), 0);
+    now += seconds(27) - milliseconds(1);
+    CHECK_EQ(tracker.Record(now), 1);
+    now += seconds(27);
+    CHECK_EQ(tracker.Record(now), 0);
+    now += seconds(27) + milliseconds(1);
+    CHECK_EQ(tracker.Record(now), 0);
+}

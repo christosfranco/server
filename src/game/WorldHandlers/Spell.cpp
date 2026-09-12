@@ -46,6 +46,7 @@
 
 #include "Utilities/Errors.h"
 #include "Spell.h"
+#include "CoaCombatIntegration.h"
 #include "Database/DatabaseEnv.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -461,6 +462,11 @@ Spell::Spell(Unit* caster, SpellEntry const* info, bool triggered, ObjectGuid or
 
     m_triggeredBySpellInfo = triggeredBy;
     m_caster = caster;
+    if (caster->GetTypeId() == TYPEID_PLAYER && static_cast<Player*>(caster)->IsCoaManaged())
+    {
+        m_coaCastId = static_cast<Player*>(caster)->NextCoaCastId();
+        m_coaPreparedOwner = CoaCombatIntegration::Identify(*caster);
+    }
     m_selfContainer = NULL;
     m_referencedFromCurrentSpell = false;
     m_executedCurrently = false;

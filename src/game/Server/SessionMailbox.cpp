@@ -26,8 +26,9 @@
 #include <memory>
 #include <mutex>
 #include "SessionMailbox.h"
-#include "Opcodes.h"
 #include "Log.h"
+#include "Opcodes.h"
+#include "SessionProtocolPolicy.h"
 
 SessionMailbox::~SessionMailbox()
 {
@@ -39,22 +40,30 @@ bool SessionMailbox::Enqueue(std::unique_ptr<WorldPacket> packet)
     if (!packet)
         return false;
 
-    // Every incoming packet is enqueued here (WorldGateway::OnPacket), and the
-    // opcode indexes opcodeTable[] (size NUM_MSG_TYPES) unchecked at every
-    // dispatch and filter site downstream. An opcode >= NUM_MSG_TYPES is thus an
-    // out-of-bounds read that crashes the world. Custom clients -- Ascension's
-    // sends opcodes up to 0x9D3 -- reach those numbers, so reject them at this
-    // single chokepoint rather than crashing deeper in.
-    if (packet->GetOpcode() >= NUM_MSG_TYPES)
+    // Filters index the opcode table before dispatch, so validate at admission.
+    // AdmitSessionOpcode is a pure range check (no table indexing), so it also
+    // covers the old out-of-range guard: any opcode >= NUM_MSG_TYPES is refused
+    // here except the CoA 0x727 replace (size-capped) on a CoA profile.
+    if (!AdmitSessionOpcode(m_profile, packet->GetOpcode(), packet->size()))
     {
-        sLog.outError("SessionMailbox: dropped out-of-range opcode 0x%.4X",
-                      packet->GetOpcode());
+        sLog.outError("SessionMailbox: ignoring unsupported opcode 0x%.4X "
+                      "(payload size %zu)",
+                      uint32(packet->GetOpcode()), packet->size());
         return false;
     }
 
     std::lock_guard<std::mutex> guard(m_stateLock);
     if (m_closed)
         return false;
+
+    if (packet->GetOpcode() == 0x727)
+    {
+        if (m_coaQueued)
+        {
+            return false;
+        }
+        m_coaQueued = true;
+    }
 
     WorldPacket* accepted = packet.get();
     m_packets.add(accepted);
@@ -67,7 +76,12 @@ bool SessionMailbox::Next(WorldPacket*& packet)
     std::lock_guard<std::mutex> guard(m_stateLock);
     if (m_closed)
         return false;
-    return m_packets.next(packet);
+    bool found = m_packets.next(packet);
+    if (found && packet->GetOpcode() == 0x727)
+    {
+        m_coaQueued = false;
+    }
+    return found;
 }
 
 void SessionMailbox::Close()

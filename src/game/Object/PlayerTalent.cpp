@@ -91,6 +91,10 @@
  */
 void Player::LearnTalent(uint32 talentId, uint32 talentRank)
 {
+    if (IsCoaManaged())
+    {
+        return;
+    }
     uint32 CurTalentPoints = GetFreeTalentPoints();
 
     if (CurTalentPoints == 0)
@@ -738,6 +742,10 @@ void Player::DeleteEquipmentSet(uint64 setGuid)
 
 void Player::ActivateSpec(uint8 specNum)
 {
+    if (IsCoaManaged())
+    {
+        return;
+    }
     if (GetActiveSpec() == specNum)
     {
         return;
@@ -886,6 +894,10 @@ void Player::ActivateSpec(uint8 specNum)
 
 void Player::UpdateSpecCount(uint8 count)
 {
+    if (IsCoaManaged())
+    {
+        return;
+    }
     uint8 curCount = GetSpecsCount();
     if (curCount == count)
     {

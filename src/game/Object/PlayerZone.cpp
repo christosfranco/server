@@ -182,7 +182,7 @@ void Player::CheckAreaExploreAndOutdoor()
         else if (p->ExplorationLevel > 0)
         {
             uint32 area = p->ID;
-            if (getLevel() >= sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+            if (getLevel() >= GetProgressionLevelCap())
             {
                 SendExplorationExperience(area, 0);
             }

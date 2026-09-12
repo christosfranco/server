@@ -37,6 +37,7 @@
 #include "Chat.h"
 #include "Language.h"
 #include "ObjectMgr.h"
+#include "InventoryTransaction.h"
 
 /**
  * @brief Opens the auction house interface for the player.
@@ -166,7 +167,16 @@ bool ChatHandler::HandleAuctionItemCommand(char* args)
         Item* newItem = Item::CreateItem(item_id, item_stack);
         MANGOS_ASSERT(newItem);
 
-        auctionHouse->AddAuction(auctionHouseEntry, newItem, etime, price, buyout);
+        PlayerInventoryTransaction transaction(CharacterDatabase, {});
+        if (!transaction.Begin())
+        {
+            delete newItem;
+            return false;
+        }
+        if (!auctionHouse->AddAuction(transaction, auctionHouseEntry, newItem, etime, price, buyout) || !transaction.Commit())
+        {
+            return false;
+        }
     }
     while (item_count);
 

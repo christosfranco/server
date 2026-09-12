@@ -121,6 +121,8 @@ namespace proto
             /// Send a bare SMSG_AUTH_RESPONSE carrying only a status byte.
             void SendAuthStatus(AuthStatus status);
 
+            void TraceKeepalive(const WorldPacket& packet, bool incoming);
+
             IWorldGateway& m_gateway;
 
             std::string m_address;
@@ -129,6 +131,8 @@ namespace proto
 
             AuthCrypt  m_crypt;
             std::mutex m_cryptSendLock; ///< serialises header encryption on send
+            bool m_coaBootstrapPending = false; ///< guarded by m_cryptSendLock
+            std::shared_ptr<const WorldPacket> m_knownAddons; ///< same lock
 
             /// Server half of the authentication nonce, drawn from the OpenSSL RNG
             /// rather than the general-purpose PRNG: it is an input to the client's
@@ -142,6 +146,10 @@ namespace proto
             /// the trace needs a copy it can read without a race. Tracing only --
             /// m_session stays the authority.
             std::atomic<SessionId> m_traceSession;
+
+            // Each counter has one owner: receive thread / send lock respectively.
+            uint32 m_pingTraceCount = 0;
+            uint32 m_pongTraceCount = 0;
 
             std::atomic<bool> m_closed;
 

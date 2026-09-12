@@ -40,6 +40,7 @@
 #include "Common/ServerDefines.h"
 #include "Utilities/Errors.h"
 #include "Player.h"
+#include "CoaProjection.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -330,6 +331,13 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
     {
         sLog.outError("%s loading from wrong account (is: %u, should be: %u)",
                       guid.GetString().c_str(), GetSession()->GetAccountId(), dbAccountId);
+        delete result;
+        return false;
+    }
+
+    if (!GetSession()->CanUseCharacterClass(fields[4].GetUInt8()))
+    {
+        sLog.outError("Character login rejected: class requires supported native profile/catalog");
         delete result;
         return false;
     }
@@ -745,6 +753,10 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
     }
 
     // load skills after InitStatsForLevel because it triggering aura apply also
+    if (!InitializeCoa())
+    {
+        return false;
+    }
     _LoadSkills(holder->GetResult(PLAYER_LOGIN_QUERY_LOADSKILLS));
 
     // apply original stats mods before spell loading or item equipment that call before equip _RemoveStatsMods()
@@ -756,6 +768,11 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
 
     m_specsCount = fields[58].GetUInt8();
     m_activeSpec = fields[59].GetUInt8();
+    if (IsCoaManaged())
+    {
+        m_specsCount = 1;
+        m_activeSpec = 0;
+    }
 
     _LoadGlyphs(holder->GetResult(PLAYER_LOGIN_QUERY_LOADGLYPHS));
 
@@ -783,6 +800,14 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
     InitTalentForLevel();
     learnDefaultSpells();
     LearnClassLevelSpells();             // catch up anything added since last login
+    if (!PrepareCoaStarterInfrastructure())
+    {
+        return false;
+    }
+    if (!ReconcileCoaSpells())
+    {
+        return false;
+    }
 
     // must be before inventory (some items required reputation check)
     m_reputationMgr.LoadFromDB(holder->GetResult(PLAYER_LOGIN_QUERY_LOADREPUTATION));
@@ -1091,6 +1116,11 @@ void Player::_LoadAuras(QueryResult* result, uint32 timediff)
             if (!spellproto)
             {
                 sLog.outError("Unknown spell (spellid %u), ignore.", spellid);
+                continue;
+            }
+            if (IsCoaManaged() && coa::OwnsProjectionAura(m_coaManagedAuras.count(spellid),
+                caster_guid == GetObjectGuid(), item_lowguid != 0, IsPassiveSpell(spellproto), maxduration))
+            {
                 continue;
             }
 
@@ -1830,12 +1860,17 @@ void Player::_LoadSpells(QueryResult* result)
 
             uint32 spell_id = fields[0].GetUInt32();
 
+            if (IsCoaManagedSpell(spell_id))
+            {
+                continue; // Native state is the only authority, including Talent.dbc overlaps.
+            }
+
             // skip talents & drop unneeded data
             if (GetTalentSpellPos(spell_id))
             {
                 sLog.outError("Player::_LoadSpells: %s has talent spell %u in character_spell, removing it.",
                               GetGuidStr().c_str(), spell_id);
-                CharacterDatabase.PExecute("DELETE FROM `character_spell` WHERE `spell` = '%u'", spell_id);
+                CharacterDatabase.PExecute("DELETE FROM `character_spell` WHERE `guid`=%u AND `spell`=%u", GetGUIDLow(), spell_id);
                 continue;
             }
 
@@ -1849,6 +1884,11 @@ void Player::_LoadSpells(QueryResult* result)
 
 void Player::_LoadTalents(QueryResult* result)
 {
+    if (IsCoaManaged())
+    {
+        delete result;
+        return;
+    }
     // QueryResult *result = CharacterDatabase.PQuery("SELECT talent_id, current_rank, spec FROM character_talent WHERE guid = '%u'",GetGUIDLow());
     if (result)
     {
@@ -2381,4 +2421,3 @@ bool Player::_LoadHomeBind(QueryResult* result)
 
     return true;
 }
-

@@ -32,6 +32,7 @@
 
 #include "Utilities/PackedValues.h"
 #include "Player.h"
+#include "StatSystem.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -109,28 +110,11 @@
  */
 void Player::HandleBaseModValue(BaseModGroup modGroup, BaseModType modType, float amount, bool apply)
 {
-    if (modGroup >= BASEMOD_END || modType >= MOD_END)
+    if (!StatSystem::ApplyBaseModifier(m_auraBaseMod, m_basePercentModifiers,
+        modGroup, modType, amount, apply))
     {
-        sLog.outError("ERROR in HandleBaseModValue(): nonexistent BaseModGroup of wrong BaseModType!");
+        sLog.outError("Invalid player base modifier for group %u, type %u", uint32(modGroup), uint32(modType));
         return;
-    }
-
-    float val = 1.0f;
-
-    switch (modType)
-    {
-        case FLAT_MOD:
-            m_auraBaseMod[modGroup][modType] += apply ? amount : -amount;
-            break;
-        case PCT_MOD:
-            if (amount <= -100.0f)
-            {
-                amount = -200.0f;
-            }
-
-            val = (100.0f + amount) / 100.0f;
-            m_auraBaseMod[modGroup][modType] *= apply ? val : (1.0f / val);
-            break;
     }
 
     if (!CanModifyStats())
@@ -148,6 +132,14 @@ void Player::HandleBaseModValue(BaseModGroup modGroup, BaseModType modType, floa
     }
 }
 
+void Player::SetBaseModValue(BaseModGroup modGroup, BaseModType modType, float value)
+{
+    if (!StatSystem::SetBaseModifier(m_auraBaseMod, m_basePercentModifiers, modGroup, modType, value))
+    {
+        sLog.outError("Invalid player base modifier replacement for group %u, type %u", uint32(modGroup), uint32(modType));
+    }
+}
+
 /**
  * @brief Gets a stored base modifier value.
  *
@@ -157,7 +149,7 @@ void Player::HandleBaseModValue(BaseModGroup modGroup, BaseModType modType, floa
  */
 float Player::GetBaseModValue(BaseModGroup modGroup, BaseModType modType) const
 {
-    if (modGroup >= BASEMOD_END || modType > MOD_END)
+    if (modGroup >= BASEMOD_END || modType >= MOD_END)
     {
         sLog.outError("trial to access nonexistent BaseModGroup or wrong BaseModType!");
         return 0.0f;
@@ -200,11 +192,8 @@ float Player::GetTotalBaseModValue(BaseModGroup modGroup) const
  */
 uint32 Player::GetShieldBlockValue() const
 {
-    float value = (m_auraBaseMod[SHIELD_BLOCK_VALUE][FLAT_MOD] + GetStat(STAT_STRENGTH) * 0.5f - 10) * m_auraBaseMod[SHIELD_BLOCK_VALUE][PCT_MOD];
-
-    value = (value < 0) ? 0 : value;
-
-    return uint32(value);
+    return StatSystem::CalculateShieldBlockValue(m_auraBaseMod[SHIELD_BLOCK_VALUE][FLAT_MOD],
+        GetStat(STAT_STRENGTH), m_auraBaseMod[SHIELD_BLOCK_VALUE][PCT_MOD]);
 }
 
 /**
@@ -432,6 +421,7 @@ void Player::ApplyRatingMod(CombatRating cr, int32 value, bool apply)
     }
 
     UpdateRating(cr);
+    if (cr == CR_CRIT_SPELL) { RefreshCoaCombatIntellect(); }
 }
 
 void Player::UpdateRating(CombatRating cr)
@@ -1404,5 +1394,3 @@ int16 Player::GetSkillTempBonusValue(uint32 skill) const
 
     return SKILL_TEMP_BONUS(GetUInt32Value(PLAYER_SKILL_BONUS_INDEX(skillStatus.pos)));
 }
-
-

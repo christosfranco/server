@@ -30,6 +30,7 @@
  */
 
 #include "Spell.h"
+#include "CoaCombatIntegration.h"
 #include "Database/DatabaseEnv.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -71,6 +72,11 @@
  */
 void Spell::DoAllEffectOnTarget(TargetInfo* target)
 {
+    struct CombatScope
+    {
+        Player* owner = nullptr;
+        ~CombatScope() { if (owner) { owner->EndCoaCombatCast(); } }
+    } combatScope;
     if (target->processed)                                  // Check target
     {
         return;
@@ -84,6 +90,30 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
     if (!unit)
     {
         return;
+    }
+    if (m_coaTargetLives.size)
+    {
+        auto identity = CoaCombatIntegration::Identify(*unit);
+        bool sameLife = false;
+        for (size_t i = 0; i < m_coaTargetLives.size; ++i)
+        {
+            sameLife = sameLife || m_coaTargetLives.values[i] == identity;
+        }
+        if (!sameLife) { return; }
+    }
+    if (m_coaAwaitingImpact)
+    {
+        if (!unit->IsAlive() || unit->IsImmuneToSpell(m_spellInfo, unit == m_caster) ||
+            unit->IsImmuneToDamage(GetSpellSchoolMask(m_spellInfo)) ||
+            PrepareCoaCombatRules() != SPELL_CAST_OK || !PublishCoaCombatRules())
+        {
+            m_caster->SendSpellMiss(unit, m_spellInfo->ID, SPELL_MISS_IMMUNE);
+            return;
+        }
+        m_coaAwaitingImpact = false;
+        m_coaTransaction->ReleaseCasts();
+        combatScope.owner = static_cast<Player*>(m_caster);
+        combatScope.owner->BeginCoaCombatCast();
     }
 
     // Get original caster (if exist) and calculate damage/healing from him data
@@ -189,6 +219,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
         }
 
         int32 gain = caster->DealHeal(unitTarget, addhealth, m_spellInfo, crit, absorb);
+        if (missInfo == SPELL_MISS_NONE && gain > 0) { ReportCoaDirectSpell(unitTarget, uint32(gain), true, crit); }
 
         if (real_caster)
         {
@@ -229,7 +260,7 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
         }
 
         // trigger weapon enchants for weapon based spells; exclude spells that stop attack, because may break CC
-        if (m_caster->GetTypeId() == TYPEID_PLAYER && m_spellInfo->EquippedItemClass == ITEM_CLASS_WEAPON &&
+        if (!m_coaRuleDepth && m_caster->GetTypeId() == TYPEID_PLAYER && m_spellInfo->EquippedItemClass == ITEM_CLASS_WEAPON &&
             !m_spellInfo->HasAttribute(SPELL_ATTR_STOP_ATTACK_TARGET))
             {
                 ((Player*)m_caster)->CastItemCombatSpell(unitTarget, m_attackType);
@@ -246,7 +277,11 @@ void Spell::DoAllEffectOnTarget(TargetInfo* target)
             }
         }
 
-        caster->DealSpellDamage(&damageInfo, true);
+        uint32 effective = caster->DealSpellDamage(&damageInfo, true);
+        if (missInfo == SPELL_MISS_NONE)
+        {
+            ReportCoaDirectSpell(unitTarget, effective, false, (damageInfo.HitInfo & SPELL_HIT_TYPE_CRIT) != 0);
+        }
 
         // Scourge Strike, here because needs to use final damage in second part of the spell
         if (m_spellInfo->SpellClassSet == SPELLFAMILY_DEATHKNIGHT && m_spellInfo->SpellClassMask & UI64LIT(0x0800000000000000))
@@ -494,7 +529,7 @@ void Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask)
         // normally shouldn't happen
         if (!m_spellAuraHolder->IsEmptyHolder())
         {
-            int32 duration = m_spellAuraHolder->GetAuraMaxDuration();
+            int32 duration = m_coaDuration ? int32(*m_coaDuration) : m_spellAuraHolder->GetAuraMaxDuration();
             int32 originalDuration = duration;
 
             if (duration > 0)
@@ -512,7 +547,7 @@ void Spell::DoSpellHitOnUnit(Unit* unit, uint32 effectMask)
 
             duration = unit->CalculateAuraDuration(m_spellInfo, effectMask, duration, m_caster);
 
-            if (duration != originalDuration)
+            if (duration != originalDuration || m_coaDuration)
             {
                 m_spellAuraHolder->SetAuraMaxDuration(duration);
                 m_spellAuraHolder->SetAuraDuration(duration);

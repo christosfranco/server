@@ -110,6 +110,13 @@ configure_file(AuctionHouseBot/ahbot.conf.dist.in ${CMAKE_CURRENT_BINARY_DIR}/Au
 
 
 add_library(game STATIC
+    CharacterAdvancement/CoaCombatRules.cpp
+    CharacterAdvancement/CoaCatalog.cpp
+    CharacterAdvancement/CoaProtocol.cpp
+    CharacterAdvancement/CoaState.cpp
+    CharacterAdvancement/CoaStore.cpp
+    CharacterAdvancement/CoaStarter.cpp
+    CharacterAdvancement/CoaStarterData.cpp
     ${SRC_GRP_AHBOT}
     ${SRC_GRP_BATTLEGROUND}
     ${SRC_GRP_CHAT_COMMANDS}
@@ -141,6 +148,7 @@ target_include_directories(game
         AuctionHouseBot
         BattleGround
         ChatCommands
+        CharacterAdvancement
         Maps
         MotionGenerators
         Object

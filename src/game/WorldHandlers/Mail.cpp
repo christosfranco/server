@@ -53,6 +53,8 @@
 #include "ObjectMgr.h"
 #include "Item.h"
 #include "Player.h"
+#include "InventoryTransaction.h"
+#include <memory>
 #include "World.h"
 #include "Calendar.h"
 
@@ -275,7 +277,26 @@ void MailDraft::SendReturnToSender(uint32 sender_acc, ObjectGuid sender_guid, Ob
  */
 void MailDraft::SendMailTo(MailReceiver const& receiver, MailSender const& sender, MailCheckMask checked, uint32 deliver_delay)
 {
+    PlayerInventoryTransaction transaction(CharacterDatabase, {});
+    if (!transaction.Begin() || !QueueMailTo(transaction, receiver, sender, checked, deliver_delay) || !transaction.Commit())
+    {
+        sLog.outError("Mail delivery transaction failed for receiver %u.", receiver.GetPlayerGuid().GetCounter());
+        deleteIncludedItems();
+    }
+}
+
+bool MailDraft::QueueMailTo(PlayerInventoryTransaction& transaction, MailReceiver const& receiver,
+    MailSender const& sender, MailCheckMask checked, uint32 deliver_delay)
+{
+    if (!transaction.IsActive())
+    {
+        return false;
+    }
     Player* pReceiver = receiver.GetPlayer();               // can be NULL
+    if (pReceiver && pReceiver->IsSaveBlocked())
+    {
+        return false;
+    }
 
     uint32 pReceiverAccount = 0;
     if (!pReceiver)
@@ -285,8 +306,7 @@ void MailDraft::SendMailTo(MailReceiver const& receiver, MailSender const& sende
 
     if (!pReceiver && !pReceiverAccount)                    // receiver not exist
     {
-        deleteIncludedItems(true);
-        return;
+        return false;
     }
 
     bool has_items = !m_items.empty();
@@ -328,25 +348,35 @@ void MailDraft::SendMailTo(MailReceiver const& receiver, MailSender const& sende
     std::string safe_body = GetBody();
     CharacterDatabase.escape_string(safe_body);
 
-    CharacterDatabase.BeginTransaction();
-    CharacterDatabase.PExecute("INSERT INTO `mail` (`id`,`messageType`,`stationery`,`mailTemplateId`,`sender`,`receiver`,`subject`,`body`,`has_items`,`expire_time`,`deliver_time`,`money`,`cod`,`checked`) "
+    if (!CharacterDatabase.PExecute("INSERT INTO `mail` (`id`,`messageType`,`stationery`,`mailTemplateId`,`sender`,`receiver`,`subject`,`body`,`has_items`,`expire_time`,`deliver_time`,`money`,`cod`,`checked`) "
                                "VALUES ('%u', '%u', '%u', '%u', '%u', '%u', '%s', '%s', '%u', '" UI64FMTD "','" UI64FMTD "', '%u', '%u', '%u')",
-                               mailId, sender.GetMailMessageType(), sender.GetStationery(), GetMailTemplateId(), sender.GetSenderId(), receiver.GetPlayerGuid().GetCounter(), safe_subject.c_str(), safe_body.c_str(), (has_items ? 1 : 0), (uint64)expire_time, (uint64)deliver_time, m_money, m_COD, checked);
+                               mailId, sender.GetMailMessageType(), sender.GetStationery(), GetMailTemplateId(), sender.GetSenderId(), receiver.GetPlayerGuid().GetCounter(), safe_subject.c_str(), safe_body.c_str(), (has_items ? 1 : 0), (uint64)expire_time, (uint64)deliver_time, m_money, m_COD, checked))
+    {
+        return false;
+    }
 
     for (MailItemMap::const_iterator mailItemIter = m_items.begin(); mailItemIter != m_items.end(); ++mailItemIter)
     {
         Item* item = mailItemIter->second;
-        CharacterDatabase.PExecute("INSERT INTO `mail_items` (`mail_id`,`item_guid`,`item_template`,`receiver`) VALUES ('%u', '%u', '%u','%u')",
-                                   mailId, item->GetGUIDLow(), item->GetEntry(), receiver.GetPlayerGuid().GetCounter());
+        if (!CharacterDatabase.PExecute("INSERT INTO `mail_items` (`mail_id`,`item_guid`,`item_template`,`receiver`) VALUES ('%u', '%u', '%u','%u')",
+                                   mailId, item->GetGUIDLow(), item->GetEntry(), receiver.GetPlayerGuid().GetCounter()))
+        {
+            return false;
+        }
     }
-    CharacterDatabase.CommitTransaction();
 
-    // For online receiver update in game mail status and data
+    // Allocate before commit; callbacks own only the pending mail, not its items.
+    // A rollback leaves the original item owner responsible for cleanup/recovery.
     if (pReceiver)
     {
-        pReceiver->AddNewMailDeliverTime(deliver_time);
-
-        Mail* m = new Mail;
+        struct PendingMail
+        {
+            std::unique_ptr<Mail> mail = std::make_unique<Mail>();
+            MailItemMap items;
+        };
+        auto pending = std::make_shared<PendingMail>();
+        pending->items = m_items;
+        Mail* m = pending->mail.get();
         m->messageID = mailId;
         m->mailTemplateId = GetMailTemplateId();
         m->subject = GetSubject();
@@ -369,20 +399,27 @@ void MailDraft::SendMailTo(MailReceiver const& receiver, MailSender const& sende
         m->checked = checked;
         m->state = MAIL_STATE_UNCHANGED;
 
-        pReceiver->AddMail(m);                           // to insert new mail to beginning of maillist
-
-        if (!m_items.empty())
+        transaction.OnCommit([pReceiver, pending, deliver_time]
         {
-            for (MailItemMap::iterator mailItemIter = m_items.begin(); mailItemIter != m_items.end(); ++mailItemIter)
+            pReceiver->AddNewMailDeliverTime(deliver_time);
+            pReceiver->AddMail(pending->mail.release());
+            for (auto const& entry : pending->items)
             {
-                pReceiver->AddMItem(mailItemIter->second);
+                pReceiver->AddMItem(entry.second);
             }
-        }
+        });
     }
     else if (!m_items.empty())
     {
-        deleteIncludedItems();
+        transaction.OnCommit([items = m_items]
+        {
+            for (auto const& entry : items)
+            {
+                delete entry.second;
+            }
+        });
     }
+    return true;
 }
 
 /**

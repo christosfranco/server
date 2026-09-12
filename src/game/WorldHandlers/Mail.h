@@ -196,6 +196,8 @@ class MailReceiver
 /**
  * The class to represent the draft of a mail.
  */
+namespace PlayerPersistence { template<class Participant> class InventoryTransaction; }
+
 class MailDraft
 {
         /**
@@ -263,6 +265,10 @@ class MailDraft
     public:                                                 // finishers
         void SendReturnToSender(uint32 sender_acc, ObjectGuid sender_guid, ObjectGuid receiver_guid);
         void SendMailTo(MailReceiver const& receiver, MailSender const& sender, MailCheckMask checked = MAIL_CHECK_MASK_NONE, uint32 deliver_delay = 0);
+        // Items remain caller-owned on failure; delivery/ownership transfer is deferred to commit.
+        [[nodiscard]] bool QueueMailTo(PlayerPersistence::InventoryTransaction<Player>& transaction,
+            MailReceiver const& receiver, MailSender const& sender,
+            MailCheckMask checked = MAIL_CHECK_MASK_NONE, uint32 deliver_delay = 0);
     private:
         MailDraft(MailDraft const&);                        // trap decl, no body, mail draft must cloned only explicitly...
         MailDraft& operator=(MailDraft const&);             // trap decl, no body, ...because items clone is high price operation

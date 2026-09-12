@@ -29,6 +29,7 @@
  */
 
 #include "Unit.h"
+#include "StatSystem.h"
 #include "Log.h"
 #include "Opcodes.h"
 #include "WorldPacket.h"
@@ -79,29 +80,30 @@
 
 bool Unit::HandleStatModifier(UnitMods unitMod, UnitModifierType modifierType, float amount, bool apply)
 {
-    if (unitMod >= UNIT_MOD_END || modifierType >= MODIFIER_TYPE_END)
+    if (uint32(unitMod) >= UNIT_MOD_END || uint32(modifierType) >= MODIFIER_TYPE_END)
     {
         sLog.outError("ERROR in HandleStatModifier(): nonexistent UnitMods or wrong UnitModifierType!");
         return false;
     }
 
-    float val = 1.0f;
-
     switch (modifierType)
     {
         case BASE_VALUE:
         case TOTAL_VALUE:
-            m_auraModifiersGroup[unitMod][modifierType] += apply ? amount : -amount;
+            if (!StatSystem::ApplyFlatModifier(m_auraModifiersGroup[unitMod][modifierType], amount, apply))
+            {
+                sLog.outError("Invalid flat stat modifier for group %u, type %u", uint32(unitMod), uint32(modifierType));
+                return false;
+            }
             break;
         case BASE_PCT:
         case TOTAL_PCT:
-            if (amount <= -100.0f)                          // small hack-fix for -100% modifiers
+            if (!m_statPercentModifiers[unitMod][modifierType == BASE_PCT ? 0 : 1].Apply(
+                m_auraModifiersGroup[unitMod][modifierType], amount, apply))
             {
-                amount = -200.0f;
+                sLog.outError("Invalid percentage stat modifier for group %u, type %u", uint32(unitMod), uint32(modifierType));
+                return false;
             }
-
-            val = (100.0f + amount) / 100.0f;
-            m_auraModifiersGroup[unitMod][modifierType] *= apply ? val : (1.0f / val);
             break;
 
         default:
@@ -151,6 +153,23 @@ bool Unit::HandleStatModifier(UnitMods unitMod, UnitModifierType modifierType, f
     }
 
     return true;
+}
+
+void Unit::SetModifierValue(UnitMods unitMod, UnitModifierType modifierType, float value)
+{
+    if (uint32(unitMod) >= UNIT_MOD_END || uint32(modifierType) >= MODIFIER_TYPE_END ||
+        !std::isfinite(value) || ((modifierType == BASE_PCT || modifierType == TOTAL_PCT) && value < 0.0f))
+    {
+        sLog.outError("Invalid stat modifier replacement for group %u, type %u", uint32(unitMod), uint32(modifierType));
+        return;
+    }
+    if (modifierType == BASE_PCT || modifierType == TOTAL_PCT)
+    {
+        m_statPercentModifiers[unitMod][modifierType == BASE_PCT ? 0 : 1].Set(
+            m_auraModifiersGroup[unitMod][modifierType], value);
+        return;
+    }
+    m_auraModifiersGroup[unitMod][modifierType] = value;
 }
 
 /**

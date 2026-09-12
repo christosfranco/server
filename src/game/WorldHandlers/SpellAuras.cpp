@@ -65,6 +65,7 @@
 #include "Player.h"
 #include "Unit.h"
 #include "Spell.h"
+#include "CoaCombatIntegration.h"
 #include "DynamicObject.h"
 #include "Group.h"
 #include "UpdateData.h"
@@ -1244,6 +1245,14 @@ void Aura::ReapplyAffectedPassiveAuras()
  */
 void Aura::TriggerSpell()
 {
+    if (GetTarget()->GetTypeId() == TYPEID_PLAYER && GetCasterGuid() == GetTarget()->GetObjectGuid() &&
+        static_cast<Player*>(GetTarget())->IsCoaManaged())
+    {
+        auto spell = GetSpellProto()->ID;
+        auto child = GetSpellProto()->EffectTriggerSpell[m_effIndex];
+        if ((spell == 300755 && child == 900755) || (spell == 500727 && child == 500728) ||
+            (spell == 803061 && child == 570188)) { return; }
+    }
     ObjectGuid casterGUID = GetCasterGuid();
     Unit* triggerTarget = GetTriggerTarget();
 
@@ -4372,7 +4381,7 @@ void SpellAuraHolder::_AddSpellAuraHolder()
     Unit* caster = GetCaster();
 
     // set infinity cooldown state for spells
-    if (caster && caster->GetTypeId() == TYPEID_PLAYER)
+    if (!m_coaControlled && caster && caster->GetTypeId() == TYPEID_PLAYER)
     {
         if (m_spellProto->HasAttribute(SPELL_ATTR_DISABLED_WHILE_ACTIVE))
         {
@@ -4389,7 +4398,7 @@ void SpellAuraHolder::_AddSpellAuraHolder()
             flags |= (1 << i);
         }
     }
-    flags |= ((GetCasterGuid() == GetTarget()->GetObjectGuid()) ? AFLAG_NOT_CASTER : AFLAG_NONE) | ((GetSpellMaxDuration(m_spellProto) > 0) ? AFLAG_DURATION : AFLAG_NONE) | (IsPositive() ? AFLAG_POSITIVE : AFLAG_NEGATIVE);
+    flags |= ((GetCasterGuid() == GetTarget()->GetObjectGuid()) ? AFLAG_NOT_CASTER : AFLAG_NONE) | ((GetAuraMaxDuration() > 0) ? AFLAG_DURATION : AFLAG_NONE) | (IsPositive() ? AFLAG_POSITIVE : AFLAG_NEGATIVE);
     SetAuraFlags(flags);
 
     SetAuraLevel(caster ? caster->getLevel() : sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL));
@@ -4402,6 +4411,8 @@ void SpellAuraHolder::_AddSpellAuraHolder()
             SetVisibleAura(false);
             SendAuraUpdate(false);
         }
+
+        if (m_coaControlled) { return; }
 
     //*****************************************************
     // Update target aura state flag (at 1 aura apply)
@@ -4480,6 +4491,16 @@ void SpellAuraHolder::_AddSpellAuraHolder()
  */
 void SpellAuraHolder::_RemoveSpellAuraHolder()
 {
+    if (m_coaControlled)
+    {
+        if (GetAuraSlot() < MAX_AURAS)
+        {
+            SetVisibleAura(true);
+            SendAuraUpdate(true);
+            m_target->UpdateAuraForGroup(GetAuraSlot());
+        }
+        return;
+    }
     // Remove all triggered by aura spells vs unlimited duration
     // except same aura replace case
     if (m_removeMode != AURA_REMOVE_BY_STACK)
@@ -4698,6 +4719,7 @@ void SpellAuraHolder::CleanupTriggeredSpells()
  */
 bool SpellAuraHolder::ModStackAmount(int32 num)
 {
+    if (RouteCoaMutation(num)) { return false; }
     uint32 protoStackAmount = m_spellProto->CumulativeAura;
 
     // Can`t mod
@@ -4730,6 +4752,7 @@ bool SpellAuraHolder::ModStackAmount(int32 num)
  */
 void SpellAuraHolder::SetStackAmount(uint32 stackAmount)
 {
+    if (m_coaControlled && RouteCoaMutation(stackAmount <= 10000 ? int32(stackAmount) : 10001, true)) { return; }
     Unit* target = GetTarget();
     Unit* caster = GetCaster();
     if (!target || !caster)
@@ -4767,6 +4790,43 @@ void SpellAuraHolder::SetStackAmount(uint32 stackAmount)
     else
         // Stack decreased only send update
         SendAuraUpdate(false);
+}
+
+bool SpellAuraHolder::RouteCoaMutation(int32 amount, bool absolute, bool remove)
+{
+    if (!m_coaControlled) { return false; }
+    auto* caster = m_target->GetMap()->GetUnit(GetCasterGuid());
+    if (!caster || caster->GetTypeId() != TYPEID_PLAYER) { return false; }
+    auto& owner = *static_cast<Player*>(caster);
+    if (!owner.IsCoaManaged() || (remove && !owner.CoaCombatPublishing())) { return false; }
+    coa::combat::Event e;
+    e.source = e.originalCaster = CoaCombatIntegration::Identify(owner);
+    e.target = CoaCombatIntegration::Identify(*m_target);
+    e.targetPolicy = m_target == &owner ? coa::combat::Target::Self :
+        owner.IsFriendlyTo(m_target) ? coa::combat::Target::Friendly : coa::combat::Target::Enemy;
+    e.spell = e.resource = GetId();
+    if (remove) { e.kind = coa::combat::EventKind::RemoveAura; }
+    else if (!coa::combat::FindResource(GetId())) { e.kind = coa::combat::EventKind::Refresh; }
+    else
+    {
+        e.kind = absolute ? coa::combat::EventKind::SetResource : amount >= 0 ?
+            coa::combat::EventKind::ResourceGain : coa::combat::EventKind::ResourceSpend;
+        e.amount = absolute ? amount : int32(std::min<int64>(10001, std::abs(int64(amount))));
+    }
+    SetInUse(true);
+    owner.OnCoaCombatEvent(e);
+    SetInUse(false);
+    return true;
+}
+
+void SpellAuraHolder::SetAuraDuration(int32 duration)
+{
+    m_duration = duration;
+    if (m_coaControlled)
+    {
+        auto* caster = GetCaster();
+        m_coaExpiresAt = caster && duration >= 0 ? caster->m_Events.CalculateTime(uint64(duration)) : 0;
+    }
 }
 
 /**
@@ -4847,6 +4907,7 @@ bool SpellAuraHolder::IsWeaponBuffCoexistableWith(SpellAuraHolder const* ref) co
  */
 bool SpellAuraHolder::IsNeedVisibleSlot(Unit const* caster) const
 {
+    if (m_coaControlled) { return true; }
     bool totemAura = caster && caster->GetTypeId() == TYPEID_UNIT && ((Creature*)caster)->IsTotem();
 
     if (m_spellProto->ProcTypeMask)
@@ -5810,6 +5871,21 @@ SpellAuraHolder::~SpellAuraHolder()
  */
 void SpellAuraHolder::Update(uint32 diff)
 {
+    if (m_coaControlled)
+    {
+        auto* caster = m_target->GetMap()->GetUnit(GetCasterGuid());
+        if (!caster || !caster->IsAlive() || caster->GetCombatEpoch() != m_coaOwnerEpoch || !m_target->IsAlive())
+        {
+            m_target->RemoveSpellAuraHolder(this);
+            return;
+        }
+        if (m_duration > 0) { m_duration = int32(std::max<int64>(0, int64(m_duration) - diff)); }
+        for (auto* aura : m_auras)
+        {
+            if (aura) { aura->UpdateAura(diff); }
+        }
+        return; // Only the explicitly coalesced periodic paths are suppressed.
+    }
     if (m_duration > 0)
     {
         m_duration -= diff;

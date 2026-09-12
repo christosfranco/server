@@ -29,6 +29,7 @@
  */
 
 #include "Unit.h"
+#include "PowerRules.h"
 #include "Log.h"
 #include "Opcodes.h"
 #include "WorldPacket.h"
@@ -78,8 +79,22 @@
  */
 void Unit::SetPowerType(Powers new_powertype)
 {
+    if (new_powertype < POWER_MANA || new_powertype >= MAX_POWERS ||
+        (GetTypeId() == TYPEID_PLAYER && GetPowerType() == new_powertype))
+    {
+        return;
+    }
+
     // set power type
     SetByteValue(UNIT_FIELD_BYTES_0, 3, new_powertype);
+
+    bool const nativePlayer = GetTypeId() == TYPEID_PLAYER && static_cast<Player*>(this)->IsCoaManaged();
+    if (nativePlayer)
+    {
+        // Displaying a form pool can activate its capacity, but is not a refill.
+        // Recompute from the cached spell requirements, never scan on casts.
+        static_cast<Player*>(this)->UpdateCoaPowerCaps();
+    }
 
     // group updates
     if (GetTypeId() == TYPEID_PLAYER)
@@ -106,7 +121,13 @@ void Unit::SetPowerType(Powers new_powertype)
     if (GetTypeId() == TYPEID_PLAYER || (GetTypeId() == TYPEID_UNIT && ((Creature*)this)->IsPet()))
     {
         uint32 maxValue = GetCreatePowers(new_powertype);
-        uint32 curValue = maxValue;
+        if (GetTypeId() == TYPEID_PLAYER)
+        {
+            // A display/form change must not throw away existing cap modifiers.
+            UpdateMaxPower(new_powertype);
+            maxValue = GetMaxPower(new_powertype);
+        }
+        uint32 curValue = new_powertype == POWER_MANA ? GetPower(POWER_MANA) : maxValue;
 
         // special cases with current power = 0
         switch (new_powertype)
@@ -119,7 +140,7 @@ void Unit::SetPowerType(Powers new_powertype)
         }
 
         // set power (except for mana)
-        if (new_powertype != POWER_MANA)
+        if (new_powertype != POWER_MANA && !nativePlayer)
         {
             SetMaxPower(new_powertype, maxValue);
             SetPower(new_powertype, curValue);
@@ -129,7 +150,7 @@ void Unit::SetPowerType(Powers new_powertype)
         WorldPacket data(SMSG_POWER_UPDATE);
         data << GetPackGUID();
         data << uint8(new_powertype);
-        data << uint32(curValue);
+        data << GetPower(new_powertype);
         SendMessageToSet(&data, true);
     }
 }
@@ -142,18 +163,23 @@ void Unit::SetPowerType(Powers new_powertype)
  */
 void Unit::SetPower(Powers power, uint32 val)
 {
-    if (GetPower(power) == val)
+    if (power < POWER_MANA || power >= MAX_POWERS)
     {
         return;
     }
 
     uint32 maxPower = GetMaxPower(power);
-    if (maxPower < val)
+    val = std::min(val, maxPower);
+    if (GetTypeId() == TYPEID_PLAYER)
     {
-        val = maxPower;
+        static_cast<Player*>(this)->ClampPowerRegen(power, val, maxPower);
+    }
+    if (GetPower(power) == val)
+    {
+        return;
     }
 
-    SetStatInt32Value(UNIT_FIELD_POWER1 + power, val);
+    SetUInt32Value(UNIT_FIELD_POWER1 + power, val);
 
     // group update
     if (GetTypeId() == TYPEID_PLAYER)
@@ -191,8 +217,12 @@ void Unit::SetPower(Powers power, uint32 val)
  */
 void Unit::SetMaxPower(Powers power, uint32 val)
 {
+    if (power < POWER_MANA || power >= MAX_POWERS)
+    {
+        return;
+    }
     uint32 cur_power = GetPower(power);
-    SetStatInt32Value(UNIT_FIELD_MAXPOWER1 + power, val);
+    SetUInt32Value(UNIT_FIELD_MAXPOWER1 + power, val);
 
     // group update
     if (GetTypeId() == TYPEID_PLAYER)
@@ -215,10 +245,7 @@ void Unit::SetMaxPower(Powers power, uint32 val)
         }
     }
 
-    if (val < cur_power)
-    {
-        SetPower(power, val);
-    }
+    SetPower(power, cur_power);
 }
 
 /**
@@ -230,28 +257,12 @@ void Unit::SetMaxPower(Powers power, uint32 val)
  */
 void Unit::ApplyPowerMod(Powers power, uint32 val, bool apply)
 {
-    ApplyModUInt32Value(UNIT_FIELD_POWER1 + power, val, apply);
-
-    // group update
-    if (GetTypeId() == TYPEID_PLAYER)
+    if (power < POWER_MANA || power >= MAX_POWERS)
     {
-        if (((Player*)this)->GetGroup())
-        {
-            ((Player*)this)->SetGroupUpdateFlag(GROUP_UPDATE_FLAG_CUR_POWER);
-        }
+        return;
     }
-    else if (((Creature*)this)->IsPet())
-    {
-        Pet* pet = ((Pet*)this);
-        if (pet->isControlled())
-        {
-            Unit* owner = GetOwner();
-            if (owner && (owner->GetTypeId() == TYPEID_PLAYER) && ((Player*)owner)->GetGroup())
-            {
-                ((Player*)owner)->SetGroupUpdateFlag(GROUP_UPDATE_FLAG_PET_CUR_POWER);
-            }
-        }
-    }
+    SetPower(power, PowerRules::ApplyDelta(GetPower(power), GetMaxPower(power),
+        apply ? int64_t(val) : -int64_t(val)));
 }
 
 /**
@@ -263,28 +274,12 @@ void Unit::ApplyPowerMod(Powers power, uint32 val, bool apply)
  */
 void Unit::ApplyMaxPowerMod(Powers power, uint32 val, bool apply)
 {
-    ApplyModUInt32Value(UNIT_FIELD_MAXPOWER1 + power, val, apply);
-
-    // group update
-    if (GetTypeId() == TYPEID_PLAYER)
+    if (power < POWER_MANA || power >= MAX_POWERS)
     {
-        if (((Player*)this)->GetGroup())
-        {
-            ((Player*)this)->SetGroupUpdateFlag(GROUP_UPDATE_FLAG_MAX_POWER);
-        }
+        return;
     }
-    else if (((Creature*)this)->IsPet())
-    {
-        Pet* pet = ((Pet*)this);
-        if (pet->isControlled())
-        {
-            Unit* owner = GetOwner();
-            if (owner && (owner->GetTypeId() == TYPEID_PLAYER) && ((Player*)owner)->GetGroup())
-            {
-                ((Player*)owner)->SetGroupUpdateFlag(GROUP_UPDATE_FLAG_PET_MAX_POWER);
-            }
-        }
-    }
+    SetMaxPower(power, PowerRules::ApplyDelta(GetMaxPower(power), UINT32_MAX,
+        apply ? int64_t(val) : -int64_t(val)));
 }
 
 /**
@@ -314,6 +309,13 @@ void Unit::ApplyAuraProcTriggerDamage(Aura* aura, bool apply)
  */
 uint32 Unit::GetCreatePowers(Powers power) const
 {
+    // Native CoA is authoritative for a CoA-managed player; everything below
+    // is the fallback for unmanaged players (stock classes, compat off).
+    if (GetTypeId() == TYPEID_PLAYER && static_cast<Player const*>(this)->IsCoaManaged())
+    {
+        return static_cast<Player const*>(this)->GetCoaCreatePower(power);
+    }
+
     // Ascension's added classes (PLAN 22.4b): ChrClasses.dbc DisplayPower is
     // the client bar type and, on this realm, the base power pool a class
     // spends from. Stock 3.3.5a hardcodes POWER_FOCUS to hunter pets and

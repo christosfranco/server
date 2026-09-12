@@ -650,6 +650,56 @@ bool Unit::AddSpellAuraHolder(SpellAuraHolder* holder)
     return true;
 }
 
+void Unit::StageCoaAura(SpellAuraHolder* previous, SpellAuraHolder* replacement)
+{
+    if (previous)
+    {
+        auto bounds = GetSpellAuraHolderBounds(previous->GetId());
+        for (auto it = bounds.first; it != bounds.second; ++it)
+        {
+            if (it->second != previous) { continue; }
+            if (it == m_spellAuraHoldersUpdateIterator) { ++m_spellAuraHoldersUpdateIterator; }
+            m_spellAuraHolders.erase(it);
+            break;
+        }
+        for (auto* aura : previous->m_auras)
+        {
+            if (aura && aura->GetModifier()->m_auraname < TOTAL_AURAS)
+            {
+                m_modAuras[aura->GetModifier()->m_auraname].remove(aura);
+            }
+        }
+    }
+    if (replacement)
+    {
+        m_spellAuraHolders.insert({replacement->GetId(), replacement});
+        for (auto* aura : replacement->m_auras)
+        {
+            if (aura) { AddAuraToModList(aura); }
+        }
+    }
+}
+
+void Unit::ActivateCoaAura(SpellAuraHolder* previous, SpellAuraHolder* replacement)
+{
+    if (previous)
+    {
+        previous->ApplyAuraModifiers(false, true);
+        previous->_RemoveSpellAuraHolder();
+        if (previous->IsInUse())
+        {
+            previous->SetDeleted();
+            m_deletedHolders.push_back(previous);
+        }
+        else { delete previous; }
+    }
+    if (replacement)
+    {
+        replacement->_AddSpellAuraHolder();
+        replacement->ApplyAuraModifiers(true, true);
+    }
+}
+
 /**
  * @brief Registers an aura in the unit's modifier lookup list.
  *
@@ -1406,6 +1456,7 @@ void Unit::RemoveNotOwnTrackedTargetAuras(uint32 newPhase)
  */
 void Unit::RemoveSpellAuraHolder(SpellAuraHolder* holder, AuraRemoveMode mode)
 {
+    if (holder->RouteCoaMutation(0, false, true)) { return; }
     // Statue unsummoned at holder remove
     SpellEntry const* AurSpellInfo = holder->GetSpellProto();
     Totem* statue = NULL;
@@ -1506,6 +1557,7 @@ void Unit::RemoveSingleAuraFromSpellAuraHolder(SpellAuraHolder* holder, SpellEff
  */
 void Unit::RemoveAura(Aura* Aur, AuraRemoveMode mode)
 {
+    if (Aur->GetHolder()->RouteCoaMutation(0, false, true)) { return; }
     // remove from list before mods removing (prevent cyclic calls, mods added before including to aura list - use reverse order)
     if (Aur->GetModifier()->m_auraname < TOTAL_AURAS)
     {

@@ -139,6 +139,13 @@ void Item::UpdateDuration(Player* owner, uint32 diff)
  */
 void Item::SaveToDB()
 {
+    if (Player* owner = GetOwner())
+    {
+        if (owner->IsSaveBlocked())
+        {
+            return;
+        }
+    }
     uint32 guid = GetGUIDLow();
     switch (uState)
     {

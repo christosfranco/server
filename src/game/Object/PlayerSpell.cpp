@@ -32,6 +32,7 @@
 #include "Common/TimeConstants.h"
 #include "Common/ServerDefines.h"
 #include "Player.h"
+#include "StatSystem.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -87,6 +88,17 @@
 #endif /* ENABLE_ELUNA */
 
 #include <cmath>
+
+namespace
+{
+    void RefreshParryCapability(Player& player)
+    {
+        player.SetCanParry(StatSystem::HasParrySource(player.GetSpellMap(),
+            [&player](uint32 id) { return player.HasSpell(id); },
+            [](uint32 id) { return sSpellStore.LookupEntry(id); }));
+    }
+}
+
 /**
  * @brief Adds or updates a spell entry in the player's spellbook.
  *
@@ -99,14 +111,26 @@
  */
 bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependent, bool disabled)
 {
+    CoaPowerUpdate powerUpdate(*this);
+    if (IsCoaManaged())
+    {
+        if (m_coaFailed || !m_coaReady)
+        {
+            return false;
+        }
+        if (IsCoaManagedSpell(spell_id) && !m_coaAllowedSpells.count(spell_id))
+        {
+            return false;
+        }
+    }
     SpellEntry const* spellInfo = sSpellStore.LookupEntry(spell_id);
     if (!spellInfo)
     {
         // do character spell book cleanup (all characters)
         if (!IsInWorld() && !learning)                      // spell load case
         {
-            sLog.outError("Player::addSpell: nonexistent in SpellStore spell #%u request, deleting for all characters in `character_spell`.", spell_id);
-            CharacterDatabase.PExecute("DELETE FROM `character_spell` WHERE `spell` = '%u'", spell_id);
+            sLog.outError("Player::addSpell: nonexistent spell #%u, removing this character's stale row.", spell_id);
+            CharacterDatabase.PExecute("DELETE FROM `character_spell` WHERE `guid`=%u AND `spell`=%u", GetGUIDLow(), spell_id);
         }
         else
         {
@@ -121,8 +145,8 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
         // do character spell book cleanup (all characters)
         if (!IsInWorld() && !learning)                      // spell load case
         {
-            sLog.outError("Player::addSpell: Broken spell #%u learning not allowed, deleting for all characters in `character_spell`.", spell_id);
-            CharacterDatabase.PExecute("DELETE FROM `character_spell` WHERE `spell` = '%u'", spell_id);
+            sLog.outError("Player::addSpell: broken spell #%u, removing this character's stale row.", spell_id);
+            CharacterDatabase.PExecute("DELETE FROM `character_spell` WHERE `guid`=%u AND `spell`=%u", GetGUIDLow(), spell_id);
         }
         else
         {
@@ -132,6 +156,14 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
         return false;
     }
 
+    if (!IsCoaManagedSpell(spell_id) && !disabled)
+    {
+        RememberCoaIndependentSpell(spell_id);
+    }
+    if (m_coaFailed)
+    {
+        return false;
+    }
     PlayerSpellState state = learning ? PLAYERSPELL_NEW : PLAYERSPELL_UNCHANGED;
 
     bool dependent_set = false;
@@ -255,6 +287,7 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
 
             if (disabled)
             {
+                RefreshParryCapability(*this);
                 return false;
             }
 
@@ -283,7 +316,9 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
             }
     }
 
-    TalentSpellPos const* talentPos = GetTalentSpellPos(spell_id);
+    TalentSpellPos const* nativeTalentPos = GetTalentSpellPos(spell_id);
+    // CA ownership, not the dependent bit, suppresses stock talent bookkeeping.
+    TalentSpellPos const* talentPos = IsCoaManagedSpell(spell_id) ? nullptr : nativeTalentPos;
 
     if (!disabled_case) // skip new spell adding if spell already known (disabled spells case)
     {
@@ -449,7 +484,7 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
 
     // cast talents with SPELL_EFFECT_LEARN_SPELL (other dependent spells will learned later as not auto-learned)
     // note: all spells with SPELL_EFFECT_LEARN_SPELL isn't passive
-    if (talentPos && IsSpellHaveEffect(spellInfo, SPELL_EFFECT_LEARN_SPELL))
+    if (nativeTalentPos && IsSpellHaveEffect(spellInfo, SPELL_EFFECT_LEARN_SPELL))
     {
         // ignore stance requirement for talent learn spell (stance set for spell only for client spell description show)
         CastSpell(this, spell_id, true);
@@ -560,6 +595,8 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
         GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_LEARN_SPELL, spell_id);
     }
 
+    RefreshParryCapability(*this);
+
     // return true (for send learn packet) only if spell active (in case ranked spells) and not replace old spell
     return active && !disabled && !superceded_old;
 }
@@ -640,14 +677,29 @@ void Player::learnSpell(uint32 spell_id, bool dependent)
  */
 void Player::removeSpell(uint32 spell_id, bool disabled, bool learn_low_rank, bool sendUpdate)
 {
+    CoaPowerUpdate powerUpdate(*this);
+    if (IsCoaManaged())
+    {
+        if (m_coaReconciling && m_coaAllowedSpells.count(spell_id))
+        {
+            return; // Another selected node or unrelated owner still owns this dependency.
+        }
+        if (!m_coaReconciling)
+        {
+            if (IsCoaManagedSpell(spell_id))
+            {
+                return;
+            }
+            m_coaIndependentRoots.erase(spell_id);
+        }
+    }
     PlayerSpellMap::iterator itr = m_spells.find(spell_id);
     if (itr == m_spells.end())
     {
         return;
     }
 
-    PlayerSpell& playerSpell = itr->second;
-    if (playerSpell.state == PLAYERSPELL_REMOVED || (disabled && playerSpell.disabled))
+    if (itr->second.state == PLAYERSPELL_REMOVED || (disabled && itr->second.disabled))
     {
         return;
     }
@@ -664,11 +716,12 @@ void Player::removeSpell(uint32 spell_id, bool disabled, bool learn_low_rank, bo
 
     // re-search, it can be corrupted in prev loop
     itr = m_spells.find(spell_id);
-    if (itr == m_spells.end() || playerSpell.state == PLAYERSPELL_REMOVED)
+    if (itr == m_spells.end() || itr->second.state == PLAYERSPELL_REMOVED)
     {
         return; // already unleared
     }
 
+    PlayerSpell& playerSpell = itr->second;
     bool cur_active = playerSpell.active;
     bool cur_dependent = playerSpell.dependent;
 
@@ -692,7 +745,14 @@ void Player::removeSpell(uint32 spell_id, bool disabled, bool learn_low_rank, bo
         }
     }
 
-    RemoveAurasDueToSpell(spell_id);
+    if (IsCoaManagedSpell(spell_id))
+    {
+        RemoveCoaProjectionAuras(spell_id);
+    }
+    else
+    {
+        RemoveAurasDueToSpell(spell_id);
+    }
 
     // remove pet auras
     for (int i = 0; i < MAX_EFFECT_INDEX; ++i)
@@ -703,7 +763,7 @@ void Player::removeSpell(uint32 spell_id, bool disabled, bool learn_low_rank, bo
         }
     }
 
-    TalentSpellPos const* talentPos = GetTalentSpellPos(spell_id);
+    TalentSpellPos const* talentPos = IsCoaManagedSpell(spell_id) ? nullptr : GetTalentSpellPos(spell_id);
     if (talentPos)
     {
         // update talent map
@@ -899,6 +959,10 @@ void Player::removeSpell(uint32 spell_id, bool disabled, bool learn_low_rank, bo
         }
     }
 
+    // A removed parent may cascade through capability-granting children or
+    // restore a lower rank. Reconcile only after those spellbook changes.
+    RefreshParryCapability(*this);
+
     // for talents and normal spell unlearn that allow offhand use for some weapons
     if (sWorld.getConfig(CONFIG_BOOL_OFFHAND_CHECK_AT_TALENTS_RESET))
     {
@@ -969,6 +1033,10 @@ uint32 Player::resetTalentsCost() const
  */
 bool Player::resetTalents(bool no_cost, bool all_specs)
 {
+    if (IsCoaManaged())
+    {
+        return all_specs && HasAtLoginFlag(AT_LOGIN_RESET_TALENTS) && ResetCoa(AT_LOGIN_RESET_TALENTS);
+    }
     // Used by Eluna
 #ifdef ENABLE_ELUNA
     if (Eluna* e = GetEluna())
@@ -1456,4 +1524,3 @@ TrainerSpellState Player::GetTrainerSpellState(TrainerSpell const* trainer_spell
 
     return TRAINER_SPELL_GREEN;
 }
-

@@ -489,7 +489,10 @@ bool ChatHandler::HandleLevelUpCommand(char* args)
         newlevel = STRONG_MAX_LEVEL;
     }
 
-    HandleCharacterLevel(target, target_guid, oldlevel, newlevel);
+    if (!HandleCharacterLevel(target, target_guid, oldlevel, newlevel))
+    {
+        return false;
+    }
 
     if (!m_session || m_session->GetPlayer() != target)     // including chr==NULL
     {

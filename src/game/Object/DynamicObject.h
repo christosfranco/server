@@ -55,6 +55,7 @@ class DynamicObject : public WorldObject
         uint32 GetDuration() const { return m_aliveDuration; }
         ObjectGuid const& GetCasterGuid() const { return GetGuidValue(DYNAMICOBJECT_CASTER); }
         Unit* GetCaster() const;
+        void SetCoaOwnerEpoch(uint64 epoch) { m_coaOwnerEpoch = epoch; }
         float GetRadius() const { return m_radius; }
         DynamicObjectType GetType() const { return (DynamicObjectType)GetByteValue(DYNAMICOBJECT_BYTES, 0); }
         bool IsAffecting(Unit* unit) const { return m_affected.find(unit->GetObjectGuid()) != m_affected.end(); }
@@ -111,5 +112,6 @@ class DynamicObject : public WorldObject
         float m_transOffsetX, m_transOffsetY, m_transOffsetZ;
     private:
         GridReference<DynamicObject> m_gridRef;
+        uint64 m_coaOwnerEpoch = 0;
 };
 #endif

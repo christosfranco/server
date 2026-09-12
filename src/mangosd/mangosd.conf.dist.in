@@ -17,6 +17,61 @@ ConfVersion=@MANGOS_WORLD_VER@
 #        Important: DataDir needs to be quoted, as it is a string which may contain space characters.
 #        Example: "${CMAKE_INSTALL_PREFIX}/share/mangos"
 #
+#    Ascension.StockAuthCompatibility
+#        Operator opt-in for the standalone 12344 candidate with restored stock
+#        authentication and header crypto. Build number alone cannot identify it.
+#        1 - stock RC4 headers plus one minimal CoA SMSG_REALM_INFO (0x9BC)
+#            immediately after AUTH_OK: realm 1, expansion 0, CoA only, empty
+#            data paths, all other fields zero. Intended for the realm-1 candidate.
+#        0 - retain existing 12344 clear headers, no CoA bootstrap (default).
+#        Stock 12340 is unchanged. Account checks and login proof are mandatory
+#        in both modes. See KnownAddons for the bundled UI bootstrap. Per new login;
+#        changing this setting does not change an already connected session.
+#        To restore defaults: disable/remove this key, reload config, reconnect.
+#
+#    Ascension.KnownAddons
+#        Explicit local client-UI trust manifest, used ONLY with the opt-in above.
+#        Sends 0x94E once after AUTH_OK and CoA realm info, before character replies.
+#        Comma-separated name:secure pairs; secure is exactly 0 or 1. A 1 selects
+#        that name for GetSecureAddons (which filters Blizzard names), used by
+#        packaged UI to enable bundled addons.
+#        This is NOT server authorization, a proof exemption, or Warden policy.
+#        Never populated from client-reported addons, wildcards, or name prefixes.
+#        Default: 11-name realm-1 UIParent lifecycle/CoA Collections tab + TOC closure
+#        in patch-B SHA256 154e8c6537794e3fe3127d658ca9fb43e5f7c488d71d7f8433ec1cf3fb5911d2.
+#        These TOCs have no Secure metadata: :1 is local policy, NOT vendor flags.
+#        Includes conditional nameplate/tutorial/instance loads and below-level-10
+#        Vanity routing. Does NOT enable every packaged addon, other-mode UI, GM or
+#        development tools. Loading UI does not supply content or gameplay protocol.
+#        Override replaces the whole manifest. Operators must verify names/assets
+#        and dependency closure themselves; this server does not inspect client MPQs.
+#        Empty disables only 0x94E. Invalid input logs an error and disables it,
+#        without fallback or partial output. At most 128 unique names, each 1..64
+#        ASCII letters/digits/underscore/hyphen. Spaces around entries are allowed;
+#        controls (including tabs/NUL), non-ASCII and duplicate names are rejected.
+#        New logins take the reload snapshot; connected/queued sessions retain theirs.
+#
+#    Ascension.RequiredClientUpdate
+#        Startup-only managed-client revision admission, independent of build/profile.
+#        Empty preserves existing behavior. Nonempty requires exactly ONE addon name
+#        beginning AscenderUpdate_, exactly equal to this value, before AUTH_OK/queue.
+#        Example: AscenderUpdate_local_update_4 for channel local-update, sequence 4.
+#        Channel is 1..32 lowercase ASCII letters/digits/hyphens, with each hyphen
+#        replaced by underscore in the addon name. Sequence is canonical decimal
+#        1..9007199254740992, no leading zeroes; full name at most 64 ASCII bytes.
+#        Disabled markers count too; enabled/CRC/TOC Version are NOT attestations.
+#        Missing/stale/duplicate markers or malformed/oversized addon blocks receive
+#        one AUTH_FAILED. Invalid nonempty config denies all, never falls back.
+#        Reload cannot enable, disable or change this requirement. Change only with
+#        a full restart draining all active/pending/queued sessions. Pin the same
+#        signed channel/sequence/content_version/data_manifest_sha256 in the release;
+#        never reuse a sequence for changed content. Include the marker's matching
+#        Interface/AddOns/<name>/<name>.toc in signed files and remove stale markers.
+#        This is for normal managed clients, NOT cryptographic filesystem proof:
+#        arbitrary clients can spoof addon names. Launcher byte verification and
+#        pending-update PLAY blocking remain necessary. Actual official-client
+#        marker emission still requires separate end-to-end verification.
+#
 #    LogsDir
 #        Logs directory setting.
 #        Important: Logs dir must exists, or all logs need to be disabled
@@ -77,6 +132,13 @@ ConfVersion=@MANGOS_WORLD_VER@
 ################################################################################
 
 RealmID                      = 1
+Ascension.StockAuthCompatibility = 0
+# Native ordinary CoA requires both explicit settings and the character CoA migration.
+# Independent reviewed SHA256 of the exact TSV, not a digest derived at startup.
+Ascension.CoA.CatalogPath = ""
+Ascension.CoA.CatalogSHA256 = ""
+Ascension.RequiredClientUpdate = ""
+Ascension.KnownAddons = "Ascension_Collections:1,AscensionUI:1,Ascension_TalentUI:1,Ascension_CoATalents:1,Ascension_Warmode:1,Ascension_NamePlates:1,Ascension_NewPlayerExperience:1,Ascension_MythicPlus:1,Ascension_Manastorm:1,Ascension_VanityCollection:1,Ascension_AppearanceUI:1"
 DataDir                      = "@CONF_INSTALL_DIR@"
 DataIntegrityCheck           = 1
 LogsDir                      = ""

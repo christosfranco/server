@@ -34,6 +34,7 @@
 #include "Opcodes.h"
 #include "ObjectMgr.h"
 #include "Guild.h"
+#include "GuildBankCleanup.h"
 #include "GuildMgr.h"
 #include "Chat.h"
 #include "SocialMgr.h"
@@ -149,7 +150,7 @@ Guild::Guild()
  */
 Guild::~Guild()
 {
-    DeleteGuildBankItems();
+    (void)DeleteGuildBankItems(false); // Memory-only cleanup is allowed even while quarantined.
 }
 
 /**
@@ -698,6 +699,10 @@ void Guild::SetLeader(ObjectGuid guid)
  */
 bool Guild::DelMember(ObjectGuid guid, bool isDisbanding)
 {
+    if (!CanDisband())
+    {
+        return false;
+    }
     uint32 lowguid = guid.GetCounter();
 
     // guild master can be deleted when loading guild and guid doesn't exist in characters table
@@ -940,12 +945,30 @@ void Guild::MassInviteToEvent(WorldSession* session, uint32 minLevel, uint32 max
  *
  * Note: guild object need deleted after this in caller code.
  */
-void Guild::Disband()
+bool Guild::CanDisband() const
 {
+    if (!GuildBankPersistence::CanCleanup(m_bankSaveBlocked, true))
+    {
+        sLog.outError("Guild %u destruction refused: bank recovery requires an authoritative reload.", m_Id);
+        return false;
+    }
+    return true;
+}
+
+bool Guild::Disband()
+{
+    if (!CanDisband())
+    {
+        return false;
+    }
     BroadcastEvent(GE_DISBANDED);
 
     while (!members.empty())
     {
+        if (!CanDisband())
+        {
+            return false;
+        }
         MemberList::const_iterator itr = members.begin();
         DelMember(ObjectGuid(HIGHGUID_PLAYER, itr->first), true);
     }
@@ -956,7 +979,11 @@ void Guild::Disband()
     CharacterDatabase.PExecute("DELETE FROM `guild_bank_tab` WHERE `guildid` = '%u'", m_Id);
 
     // Free bank tab used memory and delete items stored in them
-    DeleteGuildBankItems(true);
+    if (!DeleteGuildBankItems(true))
+    {
+        CharacterDatabase.RollbackTransaction();
+        return false;
+    }
 
     CharacterDatabase.PExecute("DELETE FROM `guild_bank_item` WHERE `guildid` = '%u'", m_Id);
     CharacterDatabase.PExecute("DELETE FROM `guild_bank_right` WHERE `guildid` = '%u'", m_Id);
@@ -973,6 +1000,7 @@ void Guild::Disband()
 #endif /* ENABLE_ELUNA */
 
     sGuildMgr.RemoveGuild(m_Id);
+    return true;
 }
 
 /**
@@ -1333,27 +1361,14 @@ void Guild::BroadcastEvent(GuildEvents event, ObjectGuid guid, char const* str1 
     DEBUG_LOG("WORLD: Sent SMSG_GUILD_EVENT");
 }
 
-void Guild::DeleteGuildBankItems(bool alsoInDB /*= false*/)
+bool Guild::DeleteGuildBankItems(bool alsoInDB /*= false*/)
 {
-    for (size_t i = 0; i < m_TabListMap.size(); ++i)
+    if (!GuildBankPersistence::DeleteItems(m_TabListMap, m_bankSaveBlocked, alsoInDB))
     {
-        for (uint8 j = 0; j < GUILD_BANK_MAX_SLOTS; ++j)
-        {
-            if (Item* pItem = m_TabListMap[i]->Slots[j])
-            {
-                pItem->RemoveFromWorld();
-
-                if (alsoInDB)
-                {
-                    pItem->DeleteFromDB();
-                }
-
-                delete pItem;
-            }
-        }
-        delete m_TabListMap[i];
+        sLog.outError("Guild %u bank item deletion refused: authoritative reload required.", m_Id);
+        return false;
     }
-    m_TabListMap.clear();
+    return true;
 }
 
 bool GuildItemPosCount::isContainedIn(GuildItemPosCountVec const& vec) const

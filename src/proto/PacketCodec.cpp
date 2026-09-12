@@ -45,6 +45,16 @@ namespace proto
     DecodeStatus PacketCodec::Feed(const uint8* data, size_t len,
                                    std::vector<WorldPacket>& out)
     {
+        return Feed(data, len, [&out](WorldPacket&& packet)
+        {
+            out.push_back(std::move(packet));
+            return true;
+        });
+    }
+
+    DecodeStatus PacketCodec::Feed(const uint8* data, size_t len,
+                                   const PacketHandler& handler)
+    {
         if (data == NULL || len == 0)
         {
             return DecodeStatus::Ok;
@@ -127,11 +137,13 @@ namespace proto
             {
                 packet.append(m_payload.data(), m_payload.size());
             }
-            out.push_back(std::move(packet));
-
             m_haveHeader = false;
             m_headerFill = 0;
             m_payload.clear();
+            if (!handler(std::move(packet)))
+            {
+                return DecodeStatus::Stopped;
+            }
         }
 
         return DecodeStatus::Ok;

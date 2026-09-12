@@ -448,6 +448,16 @@ bool Database::PExecute(const char* format, ...)
     return Execute(szQuery);
 }
 
+bool Database::ExecuteExpectedRows(char const* sql, uint64 expectedRows)
+{
+    if (!sql || !m_pAsyncConn || !m_TransStorage || !(*m_TransStorage)->get())
+    {
+        return false;
+    }
+    (*m_TransStorage)->get()->DelayExecute(new SqlExpectedRowsRequest(sql, expectedRows));
+    return true;
+}
+
 bool Database::DirectPExecute(const char* format, ...)
 {
     if (!format)
@@ -510,6 +520,11 @@ bool Database::DelayQueryHolder(std::function<void(QueryResult*, SqlQueryHolder*
     }
 
     return holder->Execute(new MaNGOS::QueryHolderCallback(std::move(callback), holder), m_threadBody, m_pResultQueue);
+}
+
+bool Database::IsTransactionActive() const
+{
+    return m_TransStorage && (*m_TransStorage)->get();
 }
 
 bool Database::BeginTransaction()

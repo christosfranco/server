@@ -1830,8 +1830,8 @@ struct SkillLineAbilityEntry
     uint32    Spell;                                      // 2        m_spell
     uint32    RaceMask;                                     // 3        m_raceMask
     uint32    ClassMask;                                    // 4        m_classMask
-    // uint32    racemaskNot;                               // 5        m_excludeRace
-    // uint32    classmaskNot;                              // 6        m_excludeClass
+    uint32    ExcludeRace;                                  // 5        m_excludeRace
+    uint32    ExcludeClass;                                 // 6        m_excludeClass
     uint32    MinSkillLineRank;                              // 7        m_minSkillLineRank
     uint32    SupercededBySpell;                              // 8        m_supercededBySpell
     uint32    AcquireMethod;                              // 9        m_acquireMethod

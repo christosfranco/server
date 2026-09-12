@@ -371,6 +371,11 @@ Player* Item::GetOwner()const
  */
 uint32 Item::GetSkill()
 {
+    return GetSkill(GetProto());
+}
+
+uint32 Item::GetSkill(ItemPrototype const* proto)
+{
     const static uint32 item_weapon_skills[MAX_ITEM_SUBCLASS_WEAPON] =
     {
         SKILL_AXES,     SKILL_2H_AXES,  SKILL_BOWS,          SKILL_GUNS,      SKILL_MACES,
@@ -384,8 +389,6 @@ uint32 Item::GetSkill()
     {
         0, SKILL_CLOTH, SKILL_LEATHER, SKILL_MAIL, SKILL_PLATE_MAIL, 0, SKILL_SHIELD, 0, 0, 0, 0
     };
-
-    ItemPrototype const* proto = GetProto();
 
     switch (proto->Class)
     {
@@ -1230,4 +1233,3 @@ void Item::SetSpellCharges(uint8 index, int32 value)
 {
     SetInt32Value(ITEM_FIELD_SPELL_CHARGES + index, (value > 0) ? -value : value);
 }
-

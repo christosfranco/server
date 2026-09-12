@@ -32,6 +32,7 @@
 #include "Log.h"
 #include "Opcodes.h"
 #include "Player.h"
+#include "InventoryTransaction.h"
 #include "Item.h"
 #include "Spell.h"
 #include "SocialMgr.h"
@@ -516,6 +517,17 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
             return;
         }
 
+        PlayerInventoryTransaction transaction(CharacterDatabase, {_player, trader});
+        if (!transaction.Begin())
+        {
+            clearAcceptTradeMode(my_trade, his_trade);
+            my_trade->SetAccepted(false, true);
+            his_trade->SetAccepted(false, true);
+            delete my_spell;
+            delete his_spell;
+            return;
+        }
+
         // execute trade: 1. remove
         for (int i = 0; i < TRADE_SLOT_TRADED_COUNT; ++i)
         {
@@ -576,11 +588,10 @@ void WorldSession::HandleAcceptTradeOpcode(WorldPacket& recvPacket)
         delete trader->m_trade;
         trader->m_trade = NULL;
 
-        // desynchronized with the other saves here (SaveInventoryAndGoldToDB() not have own transaction guards)
-        CharacterDatabase.BeginTransaction();
-        _player->SaveInventoryAndGoldToDB();
-        trader->SaveInventoryAndGoldToDB();
-        CharacterDatabase.CommitTransaction();
+        if (!transaction.Commit())
+        {
+            return;
+        }
 
         info.Status = TRADE_STATUS_TRADE_COMPLETE;
         trader->GetSession()->SendTradeStatus(info);

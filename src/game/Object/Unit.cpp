@@ -25,12 +25,14 @@
 
 #include <cstdlib>
 #include <list>
+#include <optional>
 #include <string>
 #include "Common/TimeConstants.h"
 #include "Utilities/MathDefines.h"
 #include <algorithm>
 #include "Utilities/Errors.h"
 #include "Unit.h"
+#include "PowerRules.h"
 #include "Log.h"
 #include "Opcodes.h"
 #include "WorldPacket.h"
@@ -43,6 +45,7 @@
 #include "Player.h"
 #include "Creature.h"
 #include "Spell.h"
+#include "SpellDispatch.h"
 #include "Group.h"
 #include "SpellAuras.h"
 #include "MapManager.h"
@@ -236,6 +239,7 @@ Unit::Unit() :
     m_ThreatManager(this),
     m_HostileRefManager(this)
 {
+    AdvanceCombatEpoch();
     m_objectType |= TYPEMASK_UNIT;
     m_objectTypeId = TYPEID_UNIT;
 
@@ -1934,42 +1938,44 @@ void Unit::CalculateSpellDamage(SpellNonMeleeDamage* damageInfo, int32 damage, S
  * @param damageInfo The prepared non-melee damage information.
  * @param durabilityLoss True to apply durability loss rules.
  */
-void Unit::DealSpellDamage(SpellNonMeleeDamage* damageInfo, bool durabilityLoss)
+uint32 Unit::DealSpellDamage(SpellNonMeleeDamage* damageInfo, bool durabilityLoss)
 {
     if (!damageInfo)
     {
-        return;
+        return 0;
     }
 
     Unit* pVictim = damageInfo->target;
 
-    if (!this || !pVictim)
+    if (!pVictim)
     {
-        return;
+        return 0;
     }
 
     if (!pVictim->IsAlive() || pVictim->IsTaxiFlying() || (pVictim->GetTypeId() == TYPEID_UNIT && ((Creature*)pVictim)->IsInEvadeMode()))
     {
-        return;
+        return 0;
     }
 
     SpellEntry const* spellProto = sSpellStore.LookupEntry(damageInfo->SpellID);
     if (spellProto == NULL)
     {
         sLog.outError("Unit::DealSpellDamage have wrong damageInfo->SpellID: %u", damageInfo->SpellID);
-        return;
+        return 0;
     }
 
     // You don't lose health from damage taken from another player while in a sanctuary
     // You still see it in the combat log though
     if (!IsAllowedDamageInArea(pVictim))
     {
-        return;
+        return 0;
     }
 
     // Call default DealDamage (send critical in hit info for threat calculation)
     CleanDamage cleanDamage(0, BASE_ATTACK, damageInfo->HitInfo & SPELL_HIT_TYPE_CRIT ? MELEE_HIT_CRIT : MELEE_HIT_NORMAL);
-    DealDamage(pVictim, damageInfo->damage, &cleanDamage, SPELL_DIRECT_DAMAGE, damageInfo->schoolMask, spellProto, durabilityLoss);
+    uint32 before = pVictim->GetHealth();
+    uint32 dealt = DealDamage(pVictim, damageInfo->damage, &cleanDamage, SPELL_DIRECT_DAMAGE, damageInfo->schoolMask, spellProto, durabilityLoss);
+    return std::min(before, dealt);
 }
 
 
@@ -3858,7 +3864,7 @@ void Unit::EnergizeBySpell(Unit* pVictim, uint32 SpellID, uint32 Damage, Powers 
 {
     SendEnergizeSpellLog(pVictim, SpellID, Damage, powertype);
     // needs to be called after sending spell log
-    pVictim->ModifyPower(powertype, Damage);
+    pVictim->ApplyPowerMod(powertype, Damage, true);
 }
 
 
@@ -4364,35 +4370,17 @@ int32 Unit::ModifyHealth(int32 dVal)
  */
 int32 Unit::ModifyPower(Powers power, int32 dVal)
 {
-    if (dVal == 0)
+    if (power < POWER_MANA || power >= MAX_POWERS)
     {
         return 0;
     }
 
-    int32 curPower = (int32)GetPower(power);
-
-    int32 val = dVal + curPower;
-    if (val <= 0)
-    {
-        SetPower(power, 0);
-        return -curPower;
-    }
-
-    int32 maxPower = (int32)GetMaxPower(power);
-
-    int32 gain;
-    if (val < maxPower)
-    {
-        SetPower(power, val);
-        gain = val - curPower;
-    }
-    else
-    {
-        SetPower(power, maxPower);
-        gain = maxPower - curPower;
-    }
-
-    return gain;
+    uint32 const maximum = GetMaxPower(power);
+    uint32 const current = std::min(GetPower(power), maximum);
+    uint32 const next = PowerRules::ApplyDelta(current, maximum, dVal);
+    SetPower(power, next);
+    // With a bounded current value, the applied change cannot exceed int32 dVal.
+    return int32(int64(next) - current);
 }
 
 
@@ -4463,6 +4451,11 @@ bool Unit::CanDetectInvisibilityOf(Unit const* u) const
  */
 void Unit::SetDeathState(DeathState s)
 {
+    if (s != m_deathState)
+    {
+        if (GetTypeId() == TYPEID_PLAYER) { static_cast<Player*>(this)->InvalidateCoaCombatRules(); }
+        AdvanceCombatEpoch();
+    }
     if (s != ALIVE && s != JUST_ALIVED)
     {
         CombatStop();
@@ -4865,6 +4858,8 @@ void Unit::AddToWorld()
  */
 void Unit::RemoveFromWorld()
 {
+    if (GetTypeId() == TYPEID_PLAYER) { static_cast<Player*>(this)->InvalidateCoaCombatRules(); }
+    AdvanceCombatEpoch();
     // Nothing to unboard. A unit on a deck was never registered as a passenger of anything:
     // its MAP is the vessel, and it stops being aboard by leaving that map. Only vehicles
     // still keep a roster, and a rider leaving one is the vehicle system's business.
@@ -5462,6 +5457,28 @@ void Unit::ProcDamageAndSpellFor(bool isVictim, Unit* pTarget, uint32 procFlag, 
                 continue;
             }
 
+            // Preflight instantiated auras, including present-but-filtered ones.
+            // Unused native columns are not proc requests. Keep the full-width
+            // native types for dispatch; a valid sibling can already set cooldowns.
+            SpellEntry const* spellProto = triggeredByHolder->GetSpellProto();
+            std::optional<uint32_t> auraTypes[MAX_EFFECT_INDEX];
+            for (int32 i = 0; i < MAX_EFFECT_INDEX; ++i)
+            {
+                if (Aura* aura = triggeredByHolder->GetAuraByEffectIndex(SpellEffectIndex(i)))
+                {
+                    auraTypes[i] = aura->GetSpellProto()->EffectAura[i];
+                }
+            }
+            std::size_t const invalidEffect = SpellDispatch::FirstInvalidIndex(
+                auraTypes, AuraProcHandler);
+            if (invalidEffect < MAX_EFFECT_INDEX)
+            {
+                sLog.outError("WORLD: Spell %u effect %u has out-of-range proc aura type %u",
+                    spellProto->ID, uint32(invalidEffect), *auraTypes[invalidEffect]);
+                triggeredByHolder->SetInUse(false);
+                continue;
+            }
+
             SpellProcEventEntry const* spellProcEvent = itr->spellProcEvent;
             bool useCharges = triggeredByHolder->GetAuraCharges() > 0;
             bool procSuccess = true;
@@ -5477,7 +5494,7 @@ void Unit::ProcDamageAndSpellFor(bool isVictim, Unit* pTarget, uint32 procFlag, 
             for (int32 i = 0; i < MAX_EFFECT_INDEX; ++i)
             {
                 Aura* triggeredByAura = triggeredByHolder->GetAuraByEffectIndex(SpellEffectIndex(i));
-                if (!triggeredByAura)
+                if (!triggeredByAura || !auraTypes[i])
                 {
                     continue;
                 }
@@ -5519,7 +5536,7 @@ void Unit::ProcDamageAndSpellFor(bool isVictim, Unit* pTarget, uint32 procFlag, 
                     }
                 }
 
-                SpellAuraProcResult procResult = (*this.*AuraProcHandler[triggeredByHolder->GetSpellProto()->EffectAura[i]])(pTarget, damage, triggeredByAura, procSpell, procFlag, procExtra, cooldown);
+                SpellAuraProcResult procResult = (*this.*AuraProcHandler[*auraTypes[i]])(pTarget, damage, triggeredByAura, procSpell, procFlag, procExtra, cooldown);
                 switch (procResult)
                 {
                     case SPELL_AURA_PROC_CANT_TRIGGER:

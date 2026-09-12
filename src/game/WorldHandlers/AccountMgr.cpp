@@ -201,7 +201,11 @@ AccountOpResult AccountMgr::DeleteAccount(uint32 accid)
 
             // kick if player currently
             sPlayerRegistry.Kick(guid);
-            Player::DeleteFromDB(guid, accid, false);       // no need to update realm characters
+            if (!Player::DeleteFromDB(guid, accid, false)) // no need to update realm characters
+            {
+                delete result;
+                return AOR_DB_INTERNAL_ERROR;
+            }
         }
         while (result->NextRow());
 

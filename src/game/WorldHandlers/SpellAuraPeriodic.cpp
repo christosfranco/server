@@ -42,6 +42,7 @@
 #include "SpellMgr.h"
 #include "Player.h"
 #include "Unit.h"
+#include "StatSystem.h"
 #include "Spell.h"
 #include "DynamicObject.h"
 #include "Group.h"
@@ -1179,7 +1180,7 @@ void  Aura::HandleAuraModIncreaseMaxHealth(bool apply, bool /*Real*/)
 }
 
 /**
- * @brief Applies or removes a flat increase to the current power type's maximum value.
+ * @brief Applies or removes a flat increase to the declared power pool's maximum.
  *
  * @param apply True to apply the modifier; false to remove it.
  * @param Real Unused.
@@ -1187,12 +1188,13 @@ void  Aura::HandleAuraModIncreaseMaxHealth(bool apply, bool /*Real*/)
 void Aura::HandleAuraModIncreaseEnergy(bool apply, bool Real)
 {
     Unit* target = GetTarget();
-    Powers powerType = target->GetPowerType();
-    if (int32(powerType) != m_modifier.m_miscvalue)
+    if (!StatSystem::CanModifyPower(m_modifier.m_miscvalue,
+        target->GetPowerType(), target->GetTypeId() == TYPEID_PLAYER))
     {
         return;
     }
 
+    Powers powerType = Powers(m_modifier.m_miscvalue);
     UnitMods unitMod = UnitMods(UNIT_MOD_POWER_START + powerType);
 
     // Special case with temporary increase max/current power (percent)
@@ -1212,22 +1214,24 @@ void Aura::HandleAuraModIncreaseEnergy(bool apply, bool Real)
 }
 
 /**
- * @brief Applies or removes a percentage increase to the current power type.
+ * @brief Applies or removes a percentage increase to the declared power pool.
  *
  * @param apply True to apply the modifier; false to remove it.
  * @param Real Unused.
  */
 void Aura::HandleAuraModIncreaseEnergyPercent(bool apply, bool /*Real*/)
 {
-    Powers powerType = GetTarget()->GetPowerType();
-    if (int32(powerType) != m_modifier.m_miscvalue)
+    Unit* target = GetTarget();
+    if (!StatSystem::CanModifyPower(m_modifier.m_miscvalue,
+        target->GetPowerType(), target->GetTypeId() == TYPEID_PLAYER))
     {
         return;
     }
 
+    Powers powerType = Powers(m_modifier.m_miscvalue);
     UnitMods unitMod = UnitMods(UNIT_MOD_POWER_START + powerType);
 
-    GetTarget()->HandleStatModifier(unitMod, TOTAL_PCT, float(m_modifier.m_amount), apply);
+    target->HandleStatModifier(unitMod, TOTAL_PCT, float(m_modifier.m_amount), apply);
 }
 
 /**

@@ -88,12 +88,13 @@ struct OpcodeHandler
     void (WorldSession::*handler)(WorldPacket& recvPacket);
 };
 
-extern OpcodeHandler opcodeTable[NUM_MSG_TYPES];
+#include "SessionProtocolPolicy.h"
+extern OpcodeHandler opcodeTable[SessionOpcodeCount];
 
 /// Lookup opcode name for human understandable logging
 inline const char* LookupOpcodeName(uint16 id)
 {
-    if (id >= NUM_MSG_TYPES)
+    if (id >= SessionOpcodeCount)
     {
         return "Received unknown opcode, it's more than max!";
     }

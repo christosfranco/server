@@ -221,13 +221,12 @@ bool MySQLConnection::Initialize(const char* infoString)
 
     mysql_options(mysqlInit, MYSQL_SET_CHARSET_NAME, "utf8");
 
-    // Auto-reconnect is deprecated from client 8.0.34 on, and asking for it makes the library
-    // print a warning of its own to stderr at every connect -- past our logging, so it cannot
-    // be filtered or levelled like anything else we emit. We do not need it either: a dropped
-    // connection silently reconnecting mid-transaction is how a transaction ends up half
-    // applied. Only ask for it where it is neither deprecated nor noisy.
+    // Never reconnect inside a transaction: the remaining statements could
+    // otherwise succeed on a new autocommit connection after losing the CAS.
+    // Modern clients removed/deprecated this option and already default it off.
 #if !defined(MYSQL_VERSION_ID) || MYSQL_VERSION_ID < 80034
-    mysql_options(mysqlInit, MYSQL_OPT_RECONNECT, "1");
+    bool reconnect = false;
+    mysql_options(mysqlInit, MYSQL_OPT_RECONNECT, &reconnect);
 #endif
 #ifdef WIN32
     if (host == ".")                                        // named pipe use option (Windows)

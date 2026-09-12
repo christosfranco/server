@@ -154,6 +154,16 @@ class SqlTransaction : public SqlOperation
         bool ExecuteLocked(SqlConnection* conn) override;
 };
 
+class SqlExpectedRowsRequest : public SqlPlainRequest
+{
+    public:
+        SqlExpectedRowsRequest(char const* sql, uint64 expectedRows)
+            : SqlPlainRequest(sql), m_expectedRows(expectedRows) {}
+        bool ExecuteLocked(SqlConnection* conn) override;
+    private:
+        uint64 m_expectedRows;
+};
+
 /**
  * @brief
  *

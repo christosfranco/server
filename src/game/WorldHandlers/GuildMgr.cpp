@@ -248,7 +248,11 @@ void GuildMgr::LoadGuilds()
             !newGuild->CheckGuildStructure()
            )
         {
-            newGuild->Disband();
+            if (!newGuild->Disband())
+            {
+                sLog.outError("Invalid guild cleanup refused; durable state retained for authoritative recovery.");
+            }
+            // Not registered with GuildMgr; destructor cleanup is memory-only.
             delete newGuild;
             continue;
         }

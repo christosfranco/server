@@ -88,6 +88,11 @@
  */
 void Player::resetSpells()
 {
+    if (IsCoaManaged())
+    {
+        ResetCoa(HasAtLoginFlag(AT_LOGIN_RESET_SPELLS) ? AT_LOGIN_RESET_SPELLS : 0);
+        return;
+    }
     // not need after this call
     if (HasAtLoginFlag(AT_LOGIN_RESET_SPELLS))
     {
@@ -117,6 +122,10 @@ void Player::resetSpells()
  */
 void Player::LearnClassLevelSpells()
 {
+    if (IsCoaManaged())
+    {
+        return;
+    }
     ObjectMgr::ClassLevelSpellMap const* spells = sObjectMgr.GetClassLevelSpells(getClass());
     if (!spells || spells->empty())
     {
@@ -157,6 +166,14 @@ void Player::learnDefaultSpells()
     for (PlayerCreateInfoSpells::const_iterator itr = info->spell.begin(); itr != info->spell.end(); ++itr)
     {
         uint32 tspell = *itr;
+        if (IsCoaManaged())
+        {
+            if (!IsCoaDefaultSpell(tspell))
+            {
+                continue;
+            }
+            RememberCoaIndependentSpell(tspell);
+        }
         if (HasSpell(tspell))
         {
             continue;                                       // already owned (a CA node or earlier grant promoted it): re-granting as dependent would strip the saved entry (PLAN 22.19). Mirrors LearnClassLevelSpells' skip.
@@ -206,7 +223,7 @@ void Player::learnQuestRewardedSpells(Quest const* quest)
     }
 
     // skip quests with not teaching spell or already known spell
-    if (!found)
+    if (!found && !IsCoaManaged())
     {
         return;
     }
@@ -267,7 +284,14 @@ void Player::learnQuestRewardedSpells(Quest const* quest)
         }
     }
 
-    CastSpell(this, spell_id, true);
+    if (IsCoaManaged())
+    {
+        LearnCoaQuestSpells(spellInfo, found);
+    }
+    else
+    {
+        CastSpell(this, spell_id, true);
+    }
 }
 
 /**

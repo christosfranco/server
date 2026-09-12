@@ -30,6 +30,7 @@
  */
 
 #include "Spell.h"
+#include "SpellDispatch.h"
 #include "Database/DatabaseEnv.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -76,11 +77,23 @@ extern pEffect SpellEffects[TOTAL_SPELL_EFFECTS];
  */
 void Spell::HandleEffects(Unit* pUnitTarget, Item* pItemTarget, GameObject* pGOTarget, SpellEffectIndex i, float DamageMultiplier)
 {
+    uint32 const eff = m_spellInfo->Effect[i];
+    if (m_coaSuppressSlots & (1u << i)) { return; }
+    if (eff == 175 || eff == 178 || eff == 183)
+    {
+        sLog.outError("CoA custom effect reached dispatch without committed preparation: spell %u slot %u", m_spellInfo->ID, uint32(i));
+        return;
+    }
+    if (!SpellDispatch::IsValidIndex(eff, SpellEffects))
+    {
+        sLog.outError("WORLD: Spell %u effect %u has out-of-range handler type %u",
+            m_spellInfo->ID, uint32(i), eff);
+        return;
+    }
+
     unitTarget = pUnitTarget;
     itemTarget = pItemTarget;
     gameObjTarget = pGOTarget;
-
-    uint8 eff = m_spellInfo->Effect[i];
 
     damage = int32(CalculateDamage(i, unitTarget) * DamageMultiplier);
 
@@ -90,14 +103,7 @@ void Spell::HandleEffects(Unit* pUnitTarget, Item* pItemTarget, GameObject* pGOT
                      itemTarget ? itemTarget->GetGuidStr().c_str() : "-",
                      gameObjTarget ? gameObjTarget->GetGuidStr().c_str() : "-");
 
-    if (eff < TOTAL_SPELL_EFFECTS)
-    {
-        (*this.*SpellEffects[eff])(i);
-    }
-    else
-    {
-        sLog.outError("WORLD: Spell FX %d > TOTAL_SPELL_EFFECTS ", eff);
-    }
+    (*this.*SpellEffects[eff])(i);
 }
 
 /**

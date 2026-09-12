@@ -203,8 +203,9 @@ WorldSession::WorldSession(uint32 id, std::shared_ptr<proto::IClientLink> link,
                            AccountTypes sec, uint8 expansion, time_t mute_time,
                            LocaleConstant locale, const BigNumber& sessionKey,
                            warden::AdmissionData&& admission,
-                           warden::WardenAdmissionContext admissionContext) :
-    m_muteTime(mute_time), _player(nullptr), m_link(std::move(link)),
+                           warden::WardenAdmissionContext admissionContext,
+                           proto::ConnectionProfile profile) :
+    m_clientProfile(profile), m_muteTime(mute_time), _player(nullptr), m_link(std::move(link)),
     m_mailbox(mailbox ? std::move(mailbox) : std::make_shared<SessionMailbox>()),
     m_pendingWardenAdmission(admission.available
         ? std::make_unique<warden::AdmissionData>(std::move(admission))
@@ -405,7 +406,8 @@ char const* WorldSession::GetPlayerName() const
 /// Send a packet to the client
 void WorldSession::SendPacket(WorldPacket const* packet)
 {
-    if (!m_link)
+    if (!m_link || !packet || packet->GetOpcode() >= SessionOpcodeCount ||
+        !AdmitSessionSend(m_clientProfile, packet->GetOpcode()))
     {
         return;
     }
@@ -1110,7 +1112,12 @@ bool WorldSession::Update(PacketFilter& updater)
             }
         }
 
+        bool const nativeRequest = packet->GetOpcode() == 0x727;
         delete packet;
+        if (nativeRequest)
+        {
+            break; // At most one native build dispatch per session update.
+        }
     }
 
     ///- Drop the link once the connection is gone. Releasing the shared_ptr is
@@ -1143,6 +1150,10 @@ bool WorldSession::Update(PacketFilter& updater)
 /// %Log the player out
 void WorldSession::LogoutPlayer(bool Save)
 {
+    if (_player && _player->IsSaveBlocked())
+    {
+        Save = false;
+    }
     // finish pending transfers before starting the logout
     while (_player && _player->IsBeingTeleportedFar())
     {
@@ -1375,8 +1386,11 @@ void WorldSession::HandlePingOpcode(WorldPacket& recvPacket)
     recvPacket >> ping;
     recvPacket >> latency;
 
-    uint32 fastPingRun =
-        m_pingTracker.Record(SessionPingTracker::Clock::now());
+    // Ascension build 12344 pings every 5 seconds; allow 1 second of jitter.
+    auto const minimumInterval =
+        std::chrono::seconds(m_wardenBuild == 12344 ? 4 : 27);
+    uint32 fastPingRun = m_pingTracker.Record(
+        SessionPingTracker::Clock::now(), minimumInterval);
     uint32 maximum =
         sWorld.getConfig(CONFIG_UINT32_MAX_OVERSPEED_PINGS);
     if (m_pingTracker.ShouldKick(
@@ -1957,6 +1971,10 @@ void WorldSession::SendGmResurrectSuccessResponse()
  */
 void WorldSession::ExecuteOpcode(OpcodeHandler const& opHandle, WorldPacket* packet)
 {
+    if (_player && _player->IsSaveBlocked())
+    {
+        return;
+    }
 #ifdef ENABLE_ELUNA
     if (Eluna* e = sWorld.GetEluna())
     {

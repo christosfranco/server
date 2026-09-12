@@ -747,19 +747,19 @@ void Spell::EffectPersistentAA(SpellEffectIndex eff_idx)
         pCaster = m_caster;
     }
 
-    float radius = GetSpellRadius(sSpellRadiusStore.LookupEntry(m_spellInfo->EffectRadiusIndex[eff_idx]));
-
-    if (Player* modOwner = pCaster->GetSpellModOwner())
+    DynamicObject* dynObj = m_coaPreparedAreas[eff_idx].release();
+    auto* location = std::get_if<coa::combat::Destination>(&m_coaLocation);
+    if (!dynObj)
     {
-        modOwner->ApplySpellMod(m_spellInfo->ID, SPELLMOD_RADIUS, radius);
-    }
-
-    DynamicObject* dynObj = new DynamicObject;
-    if (!dynObj->Create(pCaster->GetMap()->GenerateLocalLowGuid(HIGHGUID_DYNAMICOBJECT), pCaster, m_spellInfo->ID,
-                        eff_idx, m_targets.m_destX, m_targets.m_destY, m_targets.m_destZ, m_duration, radius, DYNAMIC_OBJECT_AREA_SPELL))
-    {
-        delete dynObj;
-        return;
+        float radius = GetSpellRadius(sSpellRadiusStore.LookupEntry(m_spellInfo->EffectRadiusIndex[eff_idx]));
+        if (Player* modOwner = pCaster->GetSpellModOwner()) { modOwner->ApplySpellMod(m_spellInfo->ID, SPELLMOD_RADIUS, radius); }
+        dynObj = new DynamicObject;
+        if (!dynObj->Create(pCaster->GetMap()->GenerateLocalLowGuid(HIGHGUID_DYNAMICOBJECT), pCaster, m_spellInfo->ID,
+                            eff_idx, m_targets.m_destX, m_targets.m_destY, m_targets.m_destZ, m_duration, radius, DYNAMIC_OBJECT_AREA_SPELL))
+        {
+            delete dynObj;
+            return;
+        }
     }
 
     // A deck-anchored area effect: it belongs to the deck spot, not the sea underneath.
@@ -767,7 +767,12 @@ void Spell::EffectPersistentAA(SpellEffectIndex eff_idx)
     // and the vessel so Update can recompose it as the ship sails. Two ways to be on a
     // deck: the point was ground-targeted on one (the dest carries its guid), or the
     // caster is simply standing on one (a self-centred aura like a consecration).
-    if (ObjectGuid destVessel = m_targets.getDestTransportGuid())
+    if (location && pCaster->GetMap()->AsTransport())
+    {
+        auto* vessel = pCaster->GetMap()->AsTransport();
+        dynObj->BindToTransport(vessel->Vessel()->GetObjectGuid(), location->x, location->y, location->z);
+    }
+    else if (ObjectGuid destVessel = m_targets.getDestTransportGuid())
     {
         float lx, ly, lz;
         m_targets.getDestTransportOffset(lx, ly, lz);
@@ -785,6 +790,7 @@ void Spell::EffectPersistentAA(SpellEffectIndex eff_idx)
     }
 
     pCaster->AddDynObject(dynObj);
+    if (location) { dynObj->SetCoaOwnerEpoch(location->owner.generation); }
     pCaster->GetMap()->Add(dynObj);
 }
 

@@ -30,6 +30,7 @@
 #include <functional>
 #include <vector>
 #include <string>
+#include <cstring>
 #include "Threading/Threading.h"
 #include "Database/SqlDelayThread.h"
 #include "Threading/ThreadLocalStore.h"
@@ -44,6 +45,7 @@ class SqlQueryHolder;
 class SqlStmtParameters;
 class SqlParamBinder;
 class Database;
+class QueryNamedResult;
 
 #define MAX_QUERY_LEN   (32*1024)
 
@@ -123,7 +125,15 @@ class SqlConnection
          * @param length
          * @return unsigned long
          */
-        virtual unsigned long escape_string(char* to, const char* from, unsigned long length) { strncpy(to, from, length); return length; }
+        virtual unsigned long escape_string(char* to, const char* from, unsigned long length)
+        {
+            if (length)
+            {
+                memcpy(to, from, length);
+            }
+            to[length] = '\0';
+            return length;
+        }
 
         /**
          * @brief nothing do if DB not support transactions
@@ -373,6 +383,10 @@ class Database
          */
         bool PExecute(const char* format, ...) ATTR_PRINTF(2, 3);
 
+        /// Queue a CAS statement in the current transaction; zero affected rows
+        /// fails the transaction. The count is read on the same locked connection.
+        bool ExecuteExpectedRows(char const* sql, uint64 expectedRows);
+
         /**
          * @brief Writes SQL commands to a LOG file (see mangosd.conf "LogSQL")
          *
@@ -387,6 +401,8 @@ class Database
          * @return bool
          */
         bool BeginTransaction();
+        /// Read only: does THIS database own a queued transaction on the calling thread?
+        bool IsTransactionActive() const;
         /**
          * @brief
          *

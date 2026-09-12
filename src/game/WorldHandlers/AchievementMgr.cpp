@@ -30,6 +30,7 @@
 #include "AchievementMgr.h"
 #include "DBCStores.h"
 #include "Player.h"
+#include "InventoryTransaction.h"
 #include "WorldPacket.h"
 #include "DBCEnums.h"
 #include "GameEventMgr.h"
@@ -533,6 +534,10 @@ void AchievementMgr::DoFailedTimedAchievementCriterias()
  */
 void AchievementMgr::UpdateAchievementCriteria(AchievementCriteriaTypes type, uint32 miscvalue1, uint32 miscvalue2, Unit* unit, uint32 time)
 {
+    if (m_player->IsCoaCreationPending())
+    {
+        return; // Login's CheckAllAchievementCriteria handles rewards after durable creation, not nested mail commits.
+    }
     DETAIL_FILTER_LOG(LOG_FILTER_ACHIEVEMENT_UPDATES, "AchievementMgr::UpdateAchievementCriteria(%u, %u, %u, %u)", type, miscvalue1, miscvalue2, time);
 
     if (!sWorld.getConfig(CONFIG_BOOL_GM_ALLOW_ACHIEVEMENT_GAINS) && m_player->GetSession()->GetSecurity() > SEC_PLAYER)
@@ -2126,6 +2131,17 @@ void AchievementMgr::SetCriteriaProgress(AchievementCriteriaEntry const* criteri
 
 void AchievementMgr::CompletedAchievement(AchievementEntry const* achievement)
 {
+    if (GetPlayer()->IsSaveBlocked())
+    {
+        return;
+    }
+    if (auto* transaction = GetPlayer()->GetInventoryTransaction())
+    {
+        // Item transfers/enchanting can earn rewards. Neither reward mail nor its
+        // success notification may open a nested transaction or survive rollback.
+        transaction->OnCommit([this, achievement] { CompletedAchievement(achievement); });
+        return;
+    }
     DETAIL_LOG("AchievementMgr::CompletedAchievement(%u)", achievement->ID);
     if (achievement->Flags & ACHIEVEMENT_FLAG_COUNTER || m_completedAchievements.find(achievement->ID) != m_completedAchievements.end())
     {
@@ -2292,4 +2308,3 @@ void AchievementMgr::BuildAllDataPacket(WorldPacket* data)
 
     *data << int32(-1);
 }
-

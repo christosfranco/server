@@ -24,6 +24,7 @@
  */
 
 #include <cmath>
+#include "StatSystem.h"
 #include "Unit.h"
 #include "Player.h"
 #include "Pet.h"
@@ -269,12 +270,7 @@ float Player::GetHealthBonusFromStamina()
  */
 float Player::GetManaBonusFromIntellect()
 {
-    float intellect = GetStat(STAT_INTELLECT);
-
-    float baseInt = intellect < 20 ? intellect : 20;
-    float moreInt = intellect - baseInt;
-
-    return baseInt + (moreInt * 15.0f);
+    return StatSystem::CalculateManaBonusFromIntellect(GetStat(STAT_INTELLECT));
 }
 
 /**
@@ -299,6 +295,11 @@ void Player::UpdateMaxHealth()
  */
 void Player::UpdateMaxPower(Powers power)
 {
+    if (uint32(power) >= MAX_POWERS)
+    {
+        return;
+    }
+
     UnitMods unitMod = UnitMods(UNIT_MOD_POWER_START + power);
 
     uint32 create_power = GetCreatePowers(power);
@@ -306,12 +307,14 @@ void Player::UpdateMaxPower(Powers power)
     // ignore classes without mana
     float bonusPower = (power == POWER_MANA && create_power > 0) ? GetManaBonusFromIntellect() : 0;
 
-    float value = GetModifierValue(unitMod, BASE_VALUE) + create_power;
-    value *= GetModifierValue(unitMod, BASE_PCT);
-    value += GetModifierValue(unitMod, TOTAL_VALUE) +  bonusPower;
-    value *= GetModifierValue(unitMod, TOTAL_PCT);
+    SetMaxPower(power, StatSystem::CalculateMaxPower(create_power, bonusPower,
+        GetModifierValue(unitMod, BASE_VALUE), GetModifierValue(unitMod, BASE_PCT),
+        GetModifierValue(unitMod, TOTAL_VALUE), GetModifierValue(unitMod, TOTAL_PCT)));
 
-    SetMaxPower(power, uint32(value));
+    if (power == POWER_MANA)
+    {
+        UpdateManaRegen();
+    }
 }
 
 void Player::ApplyFeralAPBonus(int32 amount, bool apply)
@@ -700,25 +703,10 @@ const float Player::m_diminishing_k[MAX_CLASSES] =
  */
 void Player::UpdateParryPercentage()
 {
-    const float parry_cap[MAX_CLASSES] =
-    {
-        47.003525f,  // Warrior
-        47.003525f,  // Paladin
-        145.560408f,  // Hunter
-        145.560408f,  // Rogue
-        0.0f,       // Priest
-        47.003525f,  // DK
-        145.560408f,  // Shaman
-        0.0f,       // Mage
-        0.0f,       // Warlock
-        0.0f,       // ??
-        0.0f        // Druid
-    };
-
     // No parry
     float value = 0.0f;
-    uint32 pclass = getClass() - 1;
-    if (CanParry() && parry_cap[pclass] > 0.0f)
+    uint32 classId = getClass();
+    if (CanParry() && classId > 0 && classId < MAX_CLASSES)
     {
         // Base parry
         float nondiminishing  = 5.0f;
@@ -729,10 +717,8 @@ void Player::UpdateParryPercentage()
         diminishing += (int32(GetRatingBonusValue(CR_DEFENSE_SKILL))) * 0.04f;
         // Parry from SPELL_AURA_MOD_PARRY_PERCENT aura
         nondiminishing += GetTotalAuraModifier(SPELL_AURA_MOD_PARRY_PERCENT);
-        // apply diminishing formula to diminishing parry chance
-        value = nondiminishing + diminishing * parry_cap[pclass] /
-                (diminishing + parry_cap[pclass] * m_diminishing_k[pclass]);
-        value = value < 0.0f ? 0.0f : value;
+        value = StatSystem::CalculateParryChance(classId, CanParry(),
+            nondiminishing, diminishing, m_diminishing_k[classId - 1]);
     }
     SetStatFloatValue(PLAYER_PARRY_PERCENTAGE, value);
 }
@@ -767,10 +753,11 @@ void Player::UpdateDodgePercentage()
     nondiminishing += GetTotalAuraModifier(SPELL_AURA_MOD_DODGE_PERCENT);
     // Dodge from rating
     diminishing += GetRatingBonusValue(CR_DODGE);
-    // apply diminishing formula to diminishing dodge chance
+    // Apply the calibrated curve; uncalibrated classes keep the contribution.
     uint32 pclass = getClass() - 1;
-    float value = nondiminishing + (diminishing * dodge_cap[pclass] /
-                                    (diminishing + dodge_cap[pclass] * m_diminishing_k[pclass]));
+    float value = nondiminishing +
+        StatSystem::CalculateDiminishingContribution(
+            diminishing, dodge_cap[pclass], m_diminishing_k[pclass]);
     value = value < 0.0f ? 0.0f : value;
     SetStatFloatValue(PLAYER_DODGE_PERCENTAGE, value);
 }
@@ -914,6 +901,10 @@ void Player::UpdateManaRegen()
     float Intellect = GetStat(STAT_INTELLECT);
     // Mana regen from spirit and intellect
     float power_regen = sqrt(Intellect) * OCTRegenMPPerSpirit();
+    if (IsCoaManaged() && GetCreatePowers(POWER_MANA))
+    {
+        power_regen = std::max(power_regen, coa::StarterManaRegenFloor(GetCreateMana()));
+    }
     // Apply PCT bonus from SPELL_AURA_MOD_POWER_REGEN_PERCENT aura on spirit base regen
     power_regen *= GetTotalAuraMultiplierByMiscValue(SPELL_AURA_MOD_POWER_REGEN_PERCENT, POWER_MANA);
 
@@ -928,16 +919,11 @@ void Player::UpdateManaRegen()
         power_regen_mp5 += GetStat(Stats(mod->m_miscvalue)) * mod->m_amount / 500.0f;
     }
 
-    // Set regen rate in cast state apply only on spirit based regen
-    int32 modManaRegenInterrupt = GetTotalAuraModifier(SPELL_AURA_MOD_MANA_REGEN_INTERRUPT);
-    if (modManaRegenInterrupt > 100)
-    {
-        modManaRegenInterrupt = 100;
-    }
-
-    SetStatFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER, power_regen_mp5 + power_regen * modManaRegenInterrupt / 100.0f);
-
-    SetStatFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER, power_regen_mp5 + power_regen);
+    StatSystem::ManaRegen regen = StatSystem::CalculateManaRegen(
+        GetMaxPower(POWER_MANA), power_regen, power_regen_mp5,
+        GetTotalAuraModifier(SPELL_AURA_MOD_MANA_REGEN_INTERRUPT));
+    SetStatFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER, regen.interrupted);
+    SetStatFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER, regen.normal);
 }
 
 /**

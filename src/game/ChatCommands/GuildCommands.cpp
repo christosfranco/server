@@ -153,9 +153,18 @@ bool ChatHandler::HandleGuildUninviteCommand(char* args)
         return false;
     }
 
+    if (!targetGuild->CanDisband())
+    {
+        SendSysMessage("Guild bank recovery requires an authoritative reload before this operation.");
+        SetSentErrorMessage(true);
+        return false;
+    }
     if (targetGuild->DelMember(target_guid))
     {
-        targetGuild->Disband();
+        if (!targetGuild->Disband())
+        {
+            return false;
+        }
         delete targetGuild;
     }
 
@@ -240,7 +249,12 @@ bool ChatHandler::HandleGuildDeleteCommand(char* args)
         return false;
     }
 
-    targetGuild->Disband();
+    if (!targetGuild->Disband())
+    {
+        SendSysMessage("Guild bank recovery requires an authoritative reload before this operation.");
+        SetSentErrorMessage(true);
+        return false;
+    }
     delete targetGuild;
 
     return true;

@@ -42,6 +42,9 @@
 #include "Common/ServerDefines.h"
 #include "Utilities/Errors.h"
 #include "Player.h"
+#include "PlayerSavePreflight.h"
+#include "InventoryTransaction.h"
+#include "CoaProjection.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -115,6 +118,16 @@
 
 void Player::SaveToDB()
 {
+    if (IsSaveBlocked() || m_coaCreating || (IsCoaManaged() && !m_coaState.revision))
+    {
+        return; // An ambiguous commit must not be overwritten by stale logout state.
+    }
+    if (m_inventoryTransaction)
+    {
+        // Script save requests must not consume/commit the inventory owner's queue.
+        m_inventoryTransaction->OnCommit([this] { SaveToDB(); });
+        return;
+    }
     // we should assure this: ASSERT((m_nextSave != sWorld.getConfig(CONFIG_UINT32_INTERVAL_SAVE)));
     // delay auto save at any saves (manual, in code, or autosave)
     m_nextSave = sWorld.getConfig(CONFIG_UINT32_INTERVAL_SAVE);
@@ -132,8 +145,33 @@ void Player::SaveToDB()
     DEBUG_FILTER_LOG(LOG_FILTER_PLAYER_STATS, "The value of player %s at save: ", m_name.c_str());
     outDebugStatsValues();
 
-    CharacterDatabase.BeginTransaction();
+    if (!CharacterDatabase.BeginTransaction())
+    {
+        return;
+    }
+    if (!QueueCharacterSave(false))
+    {
+        CharacterDatabase.RollbackTransaction();
+        return;
+    }
+    CharacterDatabase.CommitTransaction();
 
+    if (m_session->isLogingOut() || !sWorld.getConfig(CONFIG_BOOL_STATS_SAVE_ONLY_ON_LOGOUT))
+    {
+        _SaveStats();
+    }
+    if (Pet* pet = GetPet())
+    {
+        pet->SavePetToDB(PET_SAVE_AS_CURRENT);
+    }
+}
+
+bool Player::QueueCharacterSave(bool createOnly)
+{
+    if (IsSaveBlocked())
+    {
+        return false;
+    }
 #ifdef ENABLE_ELUNA
     // Hack to check that this is not on create save
     if (Eluna* e = GetEluna())
@@ -145,6 +183,30 @@ void Player::SaveToDB()
     }
 #endif /* ENABLE_ELUNA */
 
+    return WithInventorySavePreflight([this, createOnly] { return QueueValidatedCharacterSave(createOnly); });
+}
+
+bool Player::WithInventorySavePreflight(std::function<bool()> const& save)
+{
+    if (IsSaveBlocked())
+    {
+        return false;
+    }
+    bool validated = false;
+    bool result = PlayerPersistence::WithInventoryPreflight(
+        m_items + BUYBACK_SLOT_START, m_items + BUYBACK_SLOT_END, m_itemUpdateQueue, m_enchantDuration, ITEM_REMOVED,
+        [this](Item const* item) { return GetItemByPos(item->GetBagSlot(), item->GetSlot()); },
+        [&] { validated = true; return save(); });
+    if (!validated)
+    {
+        sLog.outError("Player %u inventory save preflight failed; pending save state was not consumed.", GetGUIDLow());
+        ChatHandler(this).SendSysMessage(LANG_ITEM_SAVE_FAILED);
+    }
+    return result;
+}
+
+bool Player::QueueValidatedCharacterSave(bool createOnly)
+{
     // PLAN 15.4. On the FIRST save (character create) the guid we were handed
     // may already carry rows in side tables: sObjectMgr.GeneratePlayerLowGuid
     // is seeded from MAX(`characters`.`guid`) + 1 at boot, so a guid whose
@@ -169,8 +231,14 @@ void Player::SaveToDB()
     static SqlStatementID delChar ;
     static SqlStatementID insChar ;
 
-    SqlStatement stmt = CharacterDatabase.CreateStatement(delChar, "DELETE FROM `characters` WHERE `guid` = ?");
-    stmt.PExecute(GetGUIDLow());
+    if (!createOnly)
+    {
+        SqlStatement stmt = CharacterDatabase.CreateStatement(delChar, "DELETE FROM `characters` WHERE `guid` = ?");
+        if (!stmt.PExecute(GetGUIDLow()))
+        {
+            return false;
+        }
+    }
 
     SqlStatement uberInsert = CharacterDatabase.CreateStatement(insChar, "INSERT INTO `characters` (`guid`,`account`,`name`,`race`,`class`,`gender`, "
                               "`level`,`xp`,`money`,`playerBytes`,`playerBytes2`,`playerFlags`,"
@@ -359,7 +427,10 @@ void Player::SaveToDB()
     uberInsert.addUInt32(uint32(GetByteValue(PLAYER_FIELD_BYTES, 2))); // actionbars
     uberInsert.addUInt32(GetCreatedDate());
 
-    uberInsert.Execute();
+    if (!uberInsert.Execute())
+    {
+        return false;
+    }
 
     if (m_mailsUpdated)                                     // save mails only when needed
     {
@@ -384,38 +455,44 @@ void Player::SaveToDB()
     _SaveGlyphs();
     _SaveTalents();
 
-    CharacterDatabase.CommitTransaction();
-
-    // check if stats should only be saved on logout
-    // save stats can be out of transaction
-    if (m_session->isLogingOut() || !sWorld.getConfig(CONFIG_BOOL_STATS_SAVE_ONLY_ON_LOGOUT))
-    {
-        _SaveStats();
-    }
-
-    // save pet (hunter pet level and experience and all type pets health/mana).
-    if (Pet* pet = GetPet())
-    {
-        pet->SavePetToDB(PET_SAVE_AS_CURRENT);
-    }
+    return true;
 }
 
 // fast save function for item/money cheating preventing - save only inventory and money state
-void Player::SaveInventoryAndGoldToDB()
+bool Player::SaveInventoryAndGoldToDB()
 {
-    _SaveInventory();
-    SaveGoldToDB();
+    return WithInventorySavePreflight([this]
+    {
+        _SaveInventory();
+        return SaveGoldToDB();
+    });
+}
+
+bool Player::CanSaveInventory()
+{
+    return WithInventorySavePreflight([] { return true; });
+}
+
+void Player::BlockSavesAndDisconnect()
+{
+    m_saveBlocked = true;
+    sLog.outError("Player %u inventory transaction failed; saves blocked until authoritative reload.", GetGUIDLow());
+    GetSession()->KickPlayer();
 }
 
 /**
  * @brief Persists the player's current money value to the database.
  */
-void Player::SaveGoldToDB()
+bool Player::SaveGoldToDB()
 {
+    if (IsSaveBlocked())
+    {
+        return false;
+    }
     static SqlStatementID updateGold ;
 
     SqlStatement stmt = CharacterDatabase.CreateStatement(updateGold, "UPDATE `characters` SET `money` = ? WHERE `guid` = ?");
-    stmt.PExecute(GetMoney(), GetGUIDLow());
+    return stmt.PExecute(GetMoney(), GetGUIDLow());
 }
 
 /**
@@ -502,6 +579,13 @@ void Player::_SaveAuras()
     for (SpellAuraHolderMap::const_iterator itr = auraHolders.begin(); itr != auraHolders.end(); ++itr)
     {
         SpellAuraHolder* holder = itr->second;
+        if (holder->IsCoaControlled()) { continue; }
+        if (IsCoaManaged() && coa::OwnsProjectionAura(m_coaManagedAuras.count(holder->GetId()),
+            holder->GetCasterGuid() == GetObjectGuid(), !holder->GetCastItemGuid().IsEmpty(),
+            holder->IsPassive(), holder->GetAuraMaxDuration()))
+        {
+            continue; // Rebuild native projection from committed CA entries on login.
+        }
         // skip all holders from spells that are passive or channeled
         // save singleTarget auras if self cast.
         bool selfCastHolder = holder->GetCasterGuid() == GetObjectGuid();
@@ -598,36 +682,6 @@ void Player::_SaveInventory()
     // if no changes
     if (m_itemUpdateQueue.empty())
     {
-        return;
-    }
-
-    // do not save if the update queue is corrupt
-    bool error = false;
-    for (size_t i = 0; i < m_itemUpdateQueue.size(); ++i)
-    {
-        Item* item = m_itemUpdateQueue[i];
-        if (!item || item->GetState() == ITEM_REMOVED)
-        {
-            continue;
-        }
-        Item* test = GetItemByPos(item->GetBagSlot(), item->GetSlot());
-
-        if (test == NULL)
-        {
-            sLog.outError("Player(GUID: %u Name: %s)::_SaveInventory - the bag(%d) and slot(%d) values for the item with guid %d are incorrect, the player doesn't have an item at that position!", GetGUIDLow(), GetName(), item->GetBagSlot(), item->GetSlot(), item->GetGUIDLow());
-            error = true;
-        }
-        else if (test != item)
-        {
-            sLog.outError("Player(GUID: %u Name: %s)::_SaveInventory - the bag(%d) and slot(%d) values for the item with guid %d are incorrect, the item with guid %d is there instead!", GetGUIDLow(), GetName(), item->GetBagSlot(), item->GetSlot(), item->GetGUIDLow(), test->GetGUIDLow());
-            error = true;
-        }
-    }
-
-    if (error)
-    {
-        sLog.outError("Player::_SaveInventory - one or more errors occurred save aborted!");
-        ChatHandler(this).SendSysMessage(LANG_ITEM_SAVE_FAILED);
         return;
     }
 
@@ -976,7 +1030,11 @@ void Player::_SaveSpells()
     {
         uint32 talentCosts = GetTalentSpellCost(itr->first);
 
-        if (!talentCosts)
+        if (IsCoaManagedSpell(itr->first))
+        {
+            stmtDel.PExecute(GetGUIDLow(), itr->first);
+        }
+        else if (!talentCosts)
         {
             if (itr->second.state == PLAYERSPELL_REMOVED || itr->second.state == PLAYERSPELL_CHANGED)
             {
@@ -1004,6 +1062,11 @@ void Player::_SaveSpells()
 
 void Player::_SaveTalents()
 {
+    if (IsCoaManaged())
+    {
+        CharacterDatabase.PExecute("DELETE FROM character_talent WHERE guid=%u", GetGUIDLow());
+        return;
+    }
     static SqlStatementID delTalents ;
     static SqlStatementID insTalents ;
 
@@ -2025,7 +2088,7 @@ void Player::LeaveAllArenaTeams(ObjectGuid guid)
 void Player::SetRestBonus(float rest_bonus_new)
 {
     // Prevent resting on max level
-    if (getLevel() >= sWorld.getConfig(CONFIG_UINT32_MAX_PLAYER_LEVEL))
+    if (getLevel() >= GetProgressionLevelCap())
     {
         rest_bonus_new = 0;
     }

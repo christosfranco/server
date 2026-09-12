@@ -101,6 +101,14 @@ namespace proto
         virtual ~AuthContext() {}
     };
 
+    /// World-selected wire policy, never a client-requested proof exemption.
+    enum class ConnectionProfile
+    {
+        Stock,
+        AscensionClearHeaders,
+        AscensionStockAuthCoA
+    };
+
     /**
      * @brief What the world knows about an account, once it has looked it up.
      */
@@ -108,11 +116,21 @@ namespace proto
     {
         AuthStatus status;      ///< Ok only if the account may proceed to the proof
         BigNumber  sessionKey;  ///< meaningful only when status == Ok
+        ConnectionProfile profile = ConnectionProfile::Stock;
+
+        /// Immutable operator-selected UI packet, never derived from addonData.
+        std::shared_ptr<const WorldPacket> knownAddons;
 
         /// Opaque, world-owned. Returned to Attach() untouched.
         std::shared_ptr<AuthContext> context;
 
         AuthLookup() : status(AuthStatus::UnknownAccount) {}
+    };
+
+    struct AttachResult
+    {
+        SessionId session = INVALID_SESSION_ID;
+        AuthStatus failure = AuthStatus::SystemError; ///< Used only without a session.
     };
 
     /**
@@ -161,7 +179,7 @@ namespace proto
              * verified, so the account is authentic by the time the world commits
              * any state to it.
              *
-             * @param request The (now trusted) login request.
+             * @param request Authenticated account proof; addon claims remain untrusted.
              * @param link    How to talk back to this client. The world keeps it
              *                for the life of the session; it is shared rather than
              *                raw so that a session outliving its socket -- which
@@ -169,12 +187,13 @@ namespace proto
              *                into a disarmed link instead of freed memory.
              * @param context Whatever LookupAccount() attached, handed straight
              *                back so the account row need not be re-read.
-             * @return A handle for later Deliver()/Detach(), or INVALID_SESSION_ID
-             *         if the world declined to create the session after all.
+             * @return A session handle, or a failure code. On failure the world must
+             *         not publish a session or send an auth response; the connection
+             *         sends the single rejection using the established wire profile.
              */
-            virtual SessionId Attach(const AuthRequest& request,
-                                     const std::shared_ptr<IClientLink>& link,
-                                     const std::shared_ptr<AuthContext>& context) = 0;
+            virtual AttachResult Attach(const AuthRequest& request,
+                                        const std::shared_ptr<IClientLink>& link,
+                                        const std::shared_ptr<AuthContext>& context) = 0;
 
             /**
              * @brief Record one packet in the packet dump, in either direction.

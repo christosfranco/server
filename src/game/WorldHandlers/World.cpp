@@ -55,6 +55,9 @@
 #include "PlayerRegistry.h"
 #include "CorpseManager.h"
 #include "World.h"
+#include "CoaState.h"
+#include <cstdlib>
+#include <stdexcept>
 #include "Database/DatabaseEnv.h"
 #include "Config/Config.h"
 #include "Platform/Define.h"
@@ -715,6 +718,49 @@ void World::SetInitialWorldSettings()
 
     sLog.outString("Loading Class Level Spells...");
     sObjectMgr.LoadClassLevelSpells();
+    if (getConfig(CONFIG_BOOL_ASCENSION_STOCK_AUTH_COMPATIBILITY))
+    {
+        try
+        {
+            m_coaCatalog = coa::Catalog::Load(sConfig.GetStringDefault("Ascension.CoA.CatalogPath", ""),
+                sConfig.GetStringDefault("Ascension.CoA.CatalogSHA256", ""));
+            for (uint32 playerClass = 12; playerClass <= 32; ++playerClass)
+            {
+                if (!m_coaCatalog->HasClass(playerClass))
+                {
+                    throw std::runtime_error("CoA catalog must cover all 21 ordinary classes");
+                }
+            }
+            if (m_coaCatalog->Specs().size() != 70)
+            {
+                throw std::runtime_error("CoA catalog must cover all 70 ordinary specializations");
+            }
+            if (!coa::SqlStore::CheckSchema(CharacterDatabase))
+            {
+                throw std::runtime_error("CoA schema incompatible: characters and both character_coa tables must use InnoDB");
+            }
+            if (!coa::SqlStore::CheckCreationSchema(CharacterDatabase))
+            {
+                throw std::runtime_error("CoA creation requires InnoDB for every full-character save table; see the storage contract");
+            }
+            for (auto spell : m_coaCatalog->AllSpells())
+            {
+                if (!sSpellStore.LookupEntry(spell))
+                {
+                    throw std::runtime_error("CoA catalog spell missing from server Spell data: " + std::to_string(spell));
+                }
+            }
+            InitializeCoaStarters();
+            sLog.outString("Native CoA catalog loaded: %s (sha256 %s).",
+                sConfig.GetStringDefault("Ascension.CoA.CatalogPath", "").c_str(),
+                sConfig.GetStringDefault("Ascension.CoA.CatalogSHA256", "").c_str());
+        }
+        catch (std::exception const& error)
+        {
+            sLog.outError("Native CoA startup failed: %s. No legacy grant fallback.", error.what());
+            std::exit(EXIT_FAILURE);
+        }
+    }
     sLog.outString(">>> Player Create Info & Level Stats loaded");
     sLog.outString();
 

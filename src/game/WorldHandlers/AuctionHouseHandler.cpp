@@ -52,6 +52,7 @@
 #include "ObjectMgr.h"
 #include "ObjectGuid.h"
 #include "Player.h"
+#include "InventoryTransaction.h"
 #include "UpdateMask.h"
 #include "AuctionHouseMgr.h"
 #include "Mail.h"
@@ -191,7 +192,7 @@ void WorldSession::SendAuctionRemovedNotification(AuctionEntry* auction)
 }
 
 // this function sends mail to old bidder
-void WorldSession::SendAuctionOutbiddedMail(AuctionEntry* auction)
+bool WorldSession::SendAuctionOutbiddedMail(AuctionEntry* auction, PlayerInventoryTransaction& transaction)
 {
     ObjectGuid oldBidder_guid = ObjectGuid(HIGHGUID_PLAYER, auction->bidder);
     Player* oldBidder = sObjectMgr.GetPlayer(oldBidder_guid);
@@ -210,17 +211,21 @@ void WorldSession::SendAuctionOutbiddedMail(AuctionEntry* auction)
 
         if (oldBidder)
         {
-            oldBidder->GetSession()->SendAuctionBidderNotification(auction);
+            transaction.OnCommit([oldBidder, previous = *auction]() mutable
+            {
+                oldBidder->GetSession()->SendAuctionBidderNotification(&previous);
+            });
         }
 
-        MailDraft(msgAuctionOutbiddedSubject.str(), "")     // TODO: fix body
+        return MailDraft(msgAuctionOutbiddedSubject.str(), "")     // TODO: fix body
         .SetMoney(auction->bid)
-        .SendMailTo(MailReceiver(oldBidder, oldBidder_guid), auction, MAIL_CHECK_MASK_COPIED);
+        .QueueMailTo(transaction, MailReceiver(oldBidder, oldBidder_guid), auction, MAIL_CHECK_MASK_COPIED);
     }
+    return true;
 }
 
 // this function sends mail, when auction is cancelled to old bidder
-void WorldSession::SendAuctionCancelledToBidderMail(AuctionEntry* auction)
+bool WorldSession::SendAuctionCancelledToBidderMail(AuctionEntry* auction, PlayerInventoryTransaction& transaction)
 {
     ObjectGuid bidder_guid = ObjectGuid(HIGHGUID_PLAYER, auction->bidder);
     Player* bidder = sObjectMgr.GetPlayer(bidder_guid);
@@ -239,13 +244,17 @@ void WorldSession::SendAuctionCancelledToBidderMail(AuctionEntry* auction)
 
         if (bidder)
         {
-            bidder->GetSession()->SendAuctionRemovedNotification(auction);
+            transaction.OnCommit([bidder, previous = *auction]() mutable
+            {
+                bidder->GetSession()->SendAuctionRemovedNotification(&previous);
+            });
         }
 
-        MailDraft(msgAuctionCancelledSubject.str(), "")     // TODO: fix body
+        return MailDraft(msgAuctionCancelledSubject.str(), "")     // TODO: fix body
         .SetMoney(auction->bid)
-        .SendMailTo(MailReceiver(bidder, bidder_guid), auction, MAIL_CHECK_MASK_COPIED);
+        .QueueMailTo(transaction, MailReceiver(bidder, bidder_guid), auction, MAIL_CHECK_MASK_COPIED);
     }
+    return true;
 }
 
 /**
@@ -424,12 +433,28 @@ void WorldSession::HandleAuctionSellItem(WorldPacket& recv_data)
         }
 
         Item* newItem = it->CloneItem(stackSize);
+        if (!newItem)
+        {
+            SendAuctionCommandResult(NULL, AUCTION_STARTED, AUCTION_ERR_DATABASE);
+            return;
+        }
+        PlayerInventoryTransaction transaction(CharacterDatabase, {pl});
+        if (!transaction.Begin())
+        {
+            delete newItem;
+            SendAuctionCommandResult(NULL, AUCTION_STARTED, AUCTION_ERR_DATABASE);
+            return;
+        }
 
         pl->DestroyItemCount(it, stackSize, true);
 
     pl->ModifyMoney(-int32(deposit));
 
-        AuctionEntry* AH = auctionHouse->AddAuction(auctionHouseEntry, newItem, etime, bid, buyout, deposit, pl);
+        AuctionEntry* AH = auctionHouse->AddAuction(transaction, auctionHouseEntry, newItem, etime, bid, buyout, deposit, pl);
+        if (!AH || !transaction.Commit())
+        {
+            return;
+        }
 
     DETAIL_LOG("selling %s to auctioneer %s with initial bid %u with buyout %u and with time %u (in sec) in auctionhouse %u",
                itemGuid.GetString().c_str(), auctioneerGuid.GetString().c_str(), bid, buyout, etime, auctionHouseEntry->houseId);
@@ -530,16 +555,13 @@ void WorldSession::HandleAuctionPlaceBid(WorldPacket& recv_data)
         return;
     }
 
+    if (!auction->UpdateBid(price, pl))
+    {
+        SendAuctionCommandResult(auction, AUCTION_BID_PLACED, AUCTION_ERR_DATABASE);
+        return;
+    }
     SendAuctionCommandResult(auction, AUCTION_BID_PLACED, AUCTION_OK);
-
-    if (auction->UpdateBid(price, pl))
-    {
-        pl->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_HIGHEST_AUCTION_BID, price);
-    }
-    else
-    {
-        pl->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_HIGHEST_AUCTION_BID, auction->buyout);
-    }
+    pl->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_HIGHEST_AUCTION_BID, auction->bid);
 }
 
 // this void is called when auction_owner cancels his auction
@@ -586,17 +608,26 @@ void WorldSession::HandleAuctionRemoveItem(WorldPacket& recv_data)
         return;
     }
 
+    uint32 auctionCut = auction->bid ? auction->GetAuctionCut() : 0;
+    if (pl->GetMoney() < auctionCut)
+    {
+        return;
+    }
+    PlayerInventoryTransaction transaction(CharacterDatabase, {pl});
+    if (!transaction.Begin())
+    {
+        SendAuctionCommandResult(auction, AUCTION_REMOVED, AUCTION_ERR_DATABASE);
+        return;
+    }
+    transaction.OnFailure([auction] { auction->BlockSaves(); });
     if (auction->bid)                                       // If we have a bid, we have to send him the money he paid
     {
-        uint32 auctionCut = auction->GetAuctionCut();
-        if (pl->GetMoney() < auctionCut)                    // player doesn't have enough money, maybe message needed
-        {
-            return;
-        }
-
         if (auction->bidder)                                // if auction have real existed bidder send mail
         {
-            SendAuctionCancelledToBidderMail(auction);
+            if (!SendAuctionCancelledToBidderMail(auction, transaction))
+            {
+                return;
+            }
         }
 
         pl->ModifyMoney(-int32(auctionCut));
@@ -606,17 +637,20 @@ void WorldSession::HandleAuctionRemoveItem(WorldPacket& recv_data)
     msgAuctionCanceledOwner << auction->itemTemplate << ":" << auction->itemRandomPropertyId << ":" << AUCTION_CANCELED << ":" << auction->Id << ":" << auction->itemCount;
 
     // item will deleted or added to received mail list
-    MailDraft(msgAuctionCanceledOwner.str(), "")            // TODO: fix body
+    if (!MailDraft(msgAuctionCanceledOwner.str(), "")            // TODO: fix body
     .AddItem(pItem)
-    .SendMailTo(pl, auction, MAIL_CHECK_MASK_COPIED);
+    .QueueMailTo(transaction, pl, auction, MAIL_CHECK_MASK_COPIED))
+    {
+        return;
+    }
 
-    // inform player, that auction is removed
-    SendAuctionCommandResult(auction, AUCTION_REMOVED, AUCTION_OK);
     // Now remove the auction
-    CharacterDatabase.BeginTransaction();
     auction->DeleteFromDB();
-    pl->SaveInventoryAndGoldToDB();
-    CharacterDatabase.CommitTransaction();
+    if (!transaction.Commit())
+    {
+        return;
+    }
+    SendAuctionCommandResult(auction, AUCTION_REMOVED, AUCTION_OK);
     sAuctionMgr.RemoveAItem(auction->itemGuidLow);
     auctionHouse->RemoveAuction(auction->Id);
     // Used by Eluna

@@ -68,7 +68,7 @@ static void DefineOpcode(uint16 opcode, const char* name, SessionStatus status, 
 #define OPCODE( name, status, packetProcessing, handler ) DefineOpcode( name, #name, status, packetProcessing, handler )
 
 /// Correspondence between opcodes and their names
-OpcodeHandler opcodeTable[NUM_MSG_TYPES];
+OpcodeHandler opcodeTable[SessionOpcodeCount];
 
 /**
  * @brief Initialize opcode table
@@ -79,10 +79,15 @@ OpcodeHandler opcodeTable[NUM_MSG_TYPES];
  */
 void InitializeOpcodes()
 {
-    for (uint16 i = 0; i < NUM_MSG_TYPES; ++i)
+    for (uint16 i = 0; i < SessionOpcodeCount; ++i)
     {
         DefineOpcode(i, "UNKNOWN", STATUS_UNHANDLED, PROCESS_INPLACE, &WorldSession::Handle_NULL);
     }
+
+    DefineOpcode(0x725, "SMSG_COA_ACTIVE", STATUS_NEVER, PROCESS_INPLACE, &WorldSession::Handle_ServerSide);
+    DefineOpcode(0x726, "SMSG_COA_ENTRIES", STATUS_NEVER, PROCESS_INPLACE, &WorldSession::Handle_ServerSide);
+    DefineOpcode(0x72C, "SMSG_COA_RESULT", STATUS_NEVER, PROCESS_INPLACE, &WorldSession::Handle_ServerSide);
+    DefineOpcode(0x727, "CMSG_COA_REPLACE", STATUS_LOGGEDIN, PROCESS_THREADUNSAFE, &WorldSession::HandleCoaReplace);
 
     OPCODE(MSG_NULL_ACTION,                                STATUS_NEVER,    PROCESS_INPLACE,      &WorldSession::Handle_NULL);
     OPCODE(CMSG_BOOTME,                                    STATUS_LOGGEDIN, PROCESS_INPLACE,      &WorldSession::BootMeHandler);

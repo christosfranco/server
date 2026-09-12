@@ -50,6 +50,8 @@
  */
 
 #include "Common/ServerDefines.h"
+#include "Player.h"
+#include "InventoryTransaction.h"
 #include "PlayerRegistry.h"
 #include "Platform/Define.h"
 #include <string>
@@ -258,9 +260,17 @@ void WorldSession::HandleGuildRemoveOpcode(WorldPacket& recvPacket)
     }
 
     // possible last member removed, do cleanup, and no need events
+    if (!guild->CanDisband())
+    {
+        ChatHandler(this).SendSysMessage("Guild bank recovery requires an authoritative reload before this operation.");
+        return;
+    }
     if (guild->DelMember(slot->guid))
     {
-        guild->Disband();
+        if (!guild->Disband())
+        {
+            return;
+        }
         delete guild;
         return;
     }
@@ -510,24 +520,37 @@ void WorldSession::HandleGuildLeaveOpcode(WorldPacket& /*recvPacket*/)
         return;
     }
 
-    sCalendarMgr.RemoveGuildCalendar(_player->GetObjectGuid(), guild->GetId());
+    if (!guild->CanDisband())
+    {
+        ChatHandler(this).SendSysMessage("Guild bank recovery requires an authoritative reload before this operation.");
+        return;
+    }
 
     if (_player->GetObjectGuid() == guild->GetLeaderGuid())
     {
-        guild->Disband();
+        if (!guild->Disband())
+        {
+            return;
+        }
+        sCalendarMgr.RemoveGuildCalendar(_player->GetObjectGuid(), guild->GetId());
         delete guild;
         return;
     }
-
-    SendGuildCommandResult(GUILD_QUIT_S, guild->GetName(), ERR_PLAYER_NO_MORE_IN_GUILD);
 
     if (guild->DelMember(_player->GetObjectGuid()))
     {
-        guild->Disband();
+        if (!guild->Disband())
+        {
+            return;
+        }
+        sCalendarMgr.RemoveGuildCalendar(_player->GetObjectGuid(), guild->GetId());
+        SendGuildCommandResult(GUILD_QUIT_S, guild->GetName(), ERR_PLAYER_NO_MORE_IN_GUILD);
         delete guild;
         return;
     }
 
+    sCalendarMgr.RemoveGuildCalendar(_player->GetObjectGuid(), guild->GetId());
+    SendGuildCommandResult(GUILD_QUIT_S, guild->GetName(), ERR_PLAYER_NO_MORE_IN_GUILD);
     // Put record into guild log
     guild->LogGuildEvent(GUILD_EVENT_LOG_LEAVE_GUILD, _player->GetObjectGuid());
 
@@ -556,7 +579,11 @@ void WorldSession::HandleGuildDisbandOpcode(WorldPacket& /*recvPacket*/)
         return;
     }
 
-    guild->Disband();
+    if (!guild->Disband())
+    {
+        ChatHandler(this).SendSysMessage("Guild bank recovery requires an authoritative reload before this operation.");
+        return;
+    }
     delete guild;
 
     DEBUG_LOG("WORLD: Guild Successfully Disbanded");
@@ -1132,13 +1159,19 @@ void WorldSession::HandleGuildBankDepositMoney(WorldPacket& recv_data)
         return;
     }
 
-    CharacterDatabase.BeginTransaction();
-
+    PlayerInventoryTransaction transaction(CharacterDatabase, {GetPlayer()});
+    if (pGuild->IsBankSaveBlocked() || !transaction.Begin())
+    {
+        return;
+    }
+    transaction.OnFailure([pGuild] { pGuild->BlockBankSaves(); });
     pGuild->SetBankMoney(pGuild->GetGuildBankMoney() + money);
     GetPlayer()->ModifyMoney(-int(money));
-    GetPlayer()->SaveGoldToDB();
-
-    CharacterDatabase.CommitTransaction();
+    pGuild->LogBankEvent(GUILD_BANK_LOG_DEPOSIT_MONEY, uint8(0), GetPlayer()->GetGUIDLow(), money);
+    if (!transaction.Commit())
+    {
+        return;
+    }
 
     // logging money
     if (_player->GetSession()->GetSecurity() > SEC_PLAYER && sWorld.getConfig(CONFIG_BOOL_GM_LOG_TRADE))
@@ -1146,9 +1179,6 @@ void WorldSession::HandleGuildBankDepositMoney(WorldPacket& recv_data)
         sLog.outCommand(_player->GetSession()->GetAccountId(), "GM %s (Account: %u) deposit money (Amount: %u) to guild bank (Guild ID %u)",
                         _player->GetName(), _player->GetSession()->GetAccountId(), money, GuildId);
     }
-
-    // log
-    pGuild->LogBankEvent(GUILD_BANK_LOG_DEPOSIT_MONEY, uint8(0), GetPlayer()->GetGUIDLow(), money);
 
 #ifdef ENABLE_ELUNA
     // TODO: ELUNAFIX NEEDED
@@ -1208,21 +1238,27 @@ void WorldSession::HandleGuildBankWithdrawMoney(WorldPacket& recv_data)
         return;
     }
 
-    CharacterDatabase.BeginTransaction();
-
-    if (!pGuild->MemberMoneyWithdraw(money, GetPlayer()->GetGUIDLow()))
+    if (pGuild->IsBankSaveBlocked() || !GetPlayer()->CanSaveInventory() ||
+        pGuild->GetMemberMoneyWithdrawRem(GetPlayer()->GetGUIDLow()) < money)
     {
-        CharacterDatabase.RollbackTransaction();
         return;
     }
-
+    PlayerInventoryTransaction transaction(CharacterDatabase, {GetPlayer()});
+    if (!transaction.Begin())
+    {
+        return;
+    }
+    transaction.OnFailure([pGuild] { pGuild->BlockBankSaves(); });
+    if (!pGuild->MemberMoneyWithdraw(money, GetPlayer()->GetGUIDLow()))
+    {
+        return;
+    }
     GetPlayer()->ModifyMoney(money);
-    GetPlayer()->SaveGoldToDB();
-
-    CharacterDatabase.CommitTransaction();
-
-    // Log
     pGuild->LogBankEvent(GUILD_BANK_LOG_WITHDRAW_MONEY, uint8(0), GetPlayer()->GetGUIDLow(), money);
+    if (!transaction.Commit())
+    {
+        return;
+    }
 
     pGuild->SendMoneyInfo(this, GetPlayer()->GetGUIDLow());
     pGuild->DisplayGuildBankTabsInfo(this);

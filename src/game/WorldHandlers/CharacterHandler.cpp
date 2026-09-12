@@ -540,7 +540,23 @@ void WorldSession::HandleCharCreateOpcode(WorldPacket& recv_data)
     uint32 createdDate = GetUnixTimeStamp(); // Unix Timestamp in seconds
     pNewChar->SetCreatedDate(createdDate); // TODO get currentTimeStamp for createdTime
 
-    if (!pNewChar->Create(sObjectMgr.GeneratePlayerLowGuid(), name, race_, class_, gender, skin, face, hairStyle, hairColor, facialHair, outfitId))
+    uint32 const guid = sObjectMgr.GeneratePlayerLowGuid();
+    auto prepare = [&]
+    {
+        if (!pNewChar->Create(guid, name, race_, class_, gender, skin, face, hairStyle, hairColor, facialHair, outfitId))
+        {
+            return false;
+        }
+        if ((have_same_race && skipCinematics == CINEMATICS_SKIP_SAME_RACE) || skipCinematics == CINEMATICS_SKIP_ALL)
+        {
+            pNewChar->setCinematic(1);
+        }
+        pNewChar->SetAtLoginFlag(AT_LOGIN_FIRST);
+        return true;
+    };
+    bool const native = class_ > MAX_STOCK_CLASS;
+    bool const created = native ? pNewChar->CreateCoaCharacter(class_, prepare) : prepare();
+    if (!created)
     {
         // Player not create (race/class problem?)
         delete pNewChar;
@@ -551,15 +567,10 @@ void WorldSession::HandleCharCreateOpcode(WorldPacket& recv_data)
         return;
     }
 
-    if ((have_same_race && skipCinematics == CINEMATICS_SKIP_SAME_RACE) || skipCinematics == CINEMATICS_SKIP_ALL)
+    if (!native)
     {
-        pNewChar->setCinematic(1);                           // not show intro
+        pNewChar->SaveToDB();
     }
-
-    pNewChar->SetAtLoginFlag(AT_LOGIN_FIRST);               // First login
-
-    // Player created, save it now
-    pNewChar->SaveToDB();
     charcount += 1;
 
     LoginDatabase.PExecute("DELETE FROM `realmcharacters` WHERE `acctid`= '%u' AND `realmid`= '%u'", GetAccountId(), realmID);
@@ -641,23 +652,26 @@ void WorldSession::HandleCharDeleteOpcode(WorldPacket& recv_data)
     BASIC_LOG("Account: %d (IP: %s) Delete Character:[%s] (guid: %u)", GetAccountId(), IP_str.c_str(), name.c_str(), lowguid);
     sLog.outChar("Account: %d (IP: %s) Delete Character:[%s] (guid: %u)", GetAccountId(), IP_str.c_str(), name.c_str(), lowguid);
 
-    // Used by Eluna
-#ifdef ENABLE_ELUNA
-    if (Eluna* e = sWorld.GetEluna())
-    {
-        e->OnDelete(lowguid);
-    }
-#endif /* ENABLE_ELUNA */
-
     if (sLog.IsOutCharDump())                               // optimize GetPlayerDump call
     {
         std::string dump = PlayerDumpWriter().GetDump(lowguid);
         sLog.outCharDump(dump.c_str(), GetAccountId(), lowguid, name.c_str());
     }
 
+    if (!Player::DeleteFromDB(guid, GetAccountId()))
+    {
+        WorldPacket data(SMSG_CHAR_DELETE, 1);
+        data << uint8(CHAR_DELETE_FAILED);
+        SendPacket(&data);
+        return;
+    }
     sCalendarMgr.RemovePlayerCalendar(guid);
-
-    Player::DeleteFromDB(guid, GetAccountId());
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = sWorld.GetEluna())
+    {
+        e->OnDelete(lowguid);
+    }
+#endif /* ENABLE_ELUNA */
 
     WorldPacket data(SMSG_CHAR_DELETE, 1);
     data << (uint8)CHAR_DELETE_SUCCESS;
@@ -1018,14 +1032,20 @@ void WorldSession::HandlePlayerLogin(LoginQueryHolder* holder)
     if (pCurrChar->HasAtLoginFlag(AT_LOGIN_RESET_SPELLS))
     {
         pCurrChar->resetSpells();
-        SendNotification(LANG_RESET_SPELLS);
+        if (!pCurrChar->HasAtLoginFlag(AT_LOGIN_RESET_SPELLS))
+        {
+            SendNotification(LANG_RESET_SPELLS);
+        }
     }
 
     if (pCurrChar->HasAtLoginFlag(AT_LOGIN_RESET_TALENTS))
     {
         pCurrChar->resetTalents(true, true);
-        pCurrChar->SendTalentsInfoData(false);              // original talents send already in to SendInitialPacketsBeforeAddToMap, resend reset state
-        SendNotification(LANG_RESET_TALENTS);               // we can use SMSG_TALENTS_INVOLUNTARILY_RESET here
+        if (!pCurrChar->HasAtLoginFlag(AT_LOGIN_RESET_TALENTS))
+        {
+            pCurrChar->SendTalentsInfoData(false);
+            SendNotification(LANG_RESET_TALENTS);
+        }
     }
 
     // Used by Eluna
@@ -1218,11 +1238,6 @@ void WorldSession::HandleShowingCloakOpcode(WorldPacket & /*recv_data*/)
     DEBUG_LOG("CMSG_SHOWING_CLOAK for %s", _player->GetName());
     _player->ToggleFlag(PLAYER_FLAGS, PLAYER_FLAGS_HIDE_CLOAK);
 }
-
-
-
-
-
 
 
 

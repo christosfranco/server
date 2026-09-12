@@ -43,6 +43,7 @@
 #include "ObjectMgr.h"
 #include "ObjectGuid.h"
 #include "Player.h"
+#include "InventoryTransaction.h"
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -128,12 +129,12 @@ uint32 AuctionHouseMgr::GetAuctionDeposit(AuctionHouseEntry const* entry, uint32
  *
  * @param auction The completed auction entry.
  */
-void AuctionHouseMgr::SendAuctionWonMail(AuctionEntry* auction)
+bool AuctionHouseMgr::SendAuctionWonMail(AuctionEntry* auction, PlayerInventoryTransaction& transaction)
 {
     Item* pItem = GetAItem(auction->itemGuidLow);
     if (!pItem)
     {
-        return;
+        return false;
     }
 
     ObjectGuid bidder_guid = ObjectGuid(HIGHGUID_PLAYER, auction->bidder);
@@ -192,11 +193,6 @@ void AuctionHouseMgr::SendAuctionWonMail(AuctionEntry* auction)
         bidder_accId = sObjectMgr.GetPlayerAccountIdByGUID(bidder_guid);
     }
 
-    if (auction_owner)
-    {
-        auction_owner->GetSession()->SendAuctionOwnerNotification(auction);
-    }
-
     // receiver exist
     if (bidder || bidder_accId)
     {
@@ -211,31 +207,51 @@ void AuctionHouseMgr::SendAuctionWonMail(AuctionEntry* auction)
 
         // set owner to bidder (to prevent delete item with sender char deleting)
         // owner in `data` will set at mail receive and item extracting
-        CharacterDatabase.PExecute("UPDATE `item_instance` SET `owner_guid` = '%u' WHERE `guid`='%u'", auction->bidder, auction->itemGuidLow);
-
-        if (bidder)
+        if (!CharacterDatabase.PExecute("UPDATE `item_instance` SET `owner_guid` = '%u' WHERE `guid`='%u'", auction->bidder, auction->itemGuidLow))
         {
-            bidder->GetSession()->SendAuctionBidderNotification(auction);
-            // FIXME: for offline player need also
-            bidder->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_WON_AUCTIONS, 1);
+            return false;
         }
 
-        RemoveAItem(auction->itemGuidLow);                  // we have to remove the item, before we delete it !!
-        auction->itemGuidLow = 0;                           // pending list will not use guid data
+        transaction.OnCommit([this, guid = auction->itemGuidLow] { RemoveAItem(guid); });
 
         // will delete item or place to receiver mail list
-        MailDraft(msgAuctionWonSubject.str(), msgAuctionWonBody.str())
+        if (!MailDraft(msgAuctionWonSubject.str(), msgAuctionWonBody.str())
         .AddItem(pItem)
-        .SendMailTo(MailReceiver(bidder, bidder_guid), auction, MAIL_CHECK_MASK_COPIED);
+        .QueueMailTo(transaction, MailReceiver(bidder, bidder_guid), auction, MAIL_CHECK_MASK_COPIED))
+        {
+            return false;
+        }
+        transaction.OnCommit([bidder, completed = *auction]() mutable
+        {
+            if (bidder)
+            {
+                bidder->GetSession()->SendAuctionBidderNotification(&completed);
+                bidder->GetAchievementMgr().UpdateAchievementCriteria(ACHIEVEMENT_CRITERIA_TYPE_WON_AUCTIONS, 1);
+            }
+        });
     }
     // receiver not exist
     else
     {
-        CharacterDatabase.PExecute("DELETE FROM `item_instance` WHERE `guid`='%u'", auction->itemGuidLow);
-        RemoveAItem(auction->itemGuidLow);                  // we have to remove the item, before we delete it !!
-        auction->itemGuidLow = 0;
-        delete pItem;
+        if (!CharacterDatabase.PExecute("DELETE FROM `item_instance` WHERE `guid`='%u'", auction->itemGuidLow))
+        {
+            return false;
+        }
+        transaction.OnCommit([this, pItem, guid = auction->itemGuidLow]
+        {
+            RemoveAItem(guid);
+            delete pItem;
+        });
     }
+    transaction.OnCommit([auction_owner, completed = *auction]() mutable
+    {
+        if (auction_owner)
+        {
+            auction_owner->GetSession()->SendAuctionOwnerNotification(&completed);
+        }
+    });
+    auction->itemGuidLow = 0;
+    return true;
 }
 
 // call this method to send mail to auction owner, when auction is successful, it does not clear ram
@@ -701,6 +717,11 @@ void AuctionHouseObject::Update()
     ///- Handle expired auctions
     for (AuctionEntryMap::iterator itr = AuctionsMap.begin(); itr != AuctionsMap.end();)
     {
+        if (itr->second->saveBlocked)
+        {
+            ++itr;
+            continue;
+        }
         if (itr->second->moneyDeliveryTime)                 // pending auction
         {
             if (curTime > itr->second->moneyDeliveryTime)
@@ -721,7 +742,11 @@ void AuctionHouseObject::Update()
                 ///- perform the transaction if there was bidder
                 if (itr->second->bid)
                 {
-                    itr->second->AuctionBidWinning();
+                    if (!itr->second->AuctionBidWinning())
+                    {
+                        ++itr;
+                        continue;
+                    }
                 }
                 ///- cancel the auction if there was no bidder and clear the auction
                 else
@@ -1155,8 +1180,12 @@ void AuctionHouseObject::BuildListPendingSales(WorldPacket& data, Player* player
  * @param pl The player creating the auction.
  * @return Pointer to the created auction entry.
  */
-AuctionEntry* AuctionHouseObject::AddAuction(AuctionHouseEntry const* auctionHouseEntry, Item* newItem, uint32 etime, uint32 bid, uint32 buyout, uint32 deposit, Player* pl /*= NULL*/)
+AuctionEntry* AuctionHouseObject::AddAuction(PlayerInventoryTransaction& transaction, AuctionHouseEntry const* auctionHouseEntry, Item* newItem, uint32 etime, uint32 bid, uint32 buyout, uint32 deposit, Player* pl /*= NULL*/)
 {
+    if (!transaction.IsActive() || !newItem)
+    {
+        return nullptr;
+    }
     uint32 auction_time = uint32(etime * sWorld.getConfig(CONFIG_FLOAT_RATE_AUCTION_TIME));
 
     AuctionEntry* AH = new AuctionEntry;
@@ -1181,21 +1210,15 @@ AuctionEntry* AuctionHouseObject::AddAuction(AuctionHouseEntry const* auctionHou
     AH->deposit = deposit;
     AH->auctionHouseEntry = auctionHouseEntry;
 
-    AddAuction(AH);
-
-    sAuctionMgr.AddAItem(newItem);
-
-    CharacterDatabase.BeginTransaction();
+    transaction.OnFailure([AH, newItem] { delete AH; delete newItem; });
+    transaction.OnCommit([this, AH, newItem]
+    {
+        AddAuction(AH);
+        sAuctionMgr.AddAItem(newItem);
+    });
 
     newItem->SaveToDB();
     AH->SaveToDB();
-
-    if (pl)
-    {
-        pl->SaveInventoryAndGoldToDB();
-    }
-
-    CharacterDatabase.CommitTransaction();
 
     return AH;
 }
@@ -1254,6 +1277,10 @@ AuctionEntry* AuctionHouseObject::AddAuctionByGuid(AuctionHouseEntry const* auct
  */
 bool AuctionEntry::BuildAuctionInfo(WorldPacket& data) const
 {
+    if (saveBlocked)
+    {
+        return false;
+    }
     Item* pItem = sAuctionMgr.GetAItem(itemGuidLow);
     if (!pItem)
     {
@@ -1326,24 +1353,35 @@ void AuctionEntry::SaveToDB() const
                                Id, auctionHouseEntry->houseId, itemGuidLow, itemTemplate, itemCount, itemRandomPropertyId, owner, buyout, (uint64)expireTime, (uint64)moneyDeliveryTime, bidder, bid, startbid, deposit);
 }
 
-/**
- * @brief Finalizes a winning auction bid and completes the sale.
- *
- * @param newbidder The winning bidder, if online.
- */
-void AuctionEntry::AuctionBidWinning(Player* newbidder)
+// An uncertain commit cannot be retried using the old cached auction.
+void AuctionEntry::BlockSaves()
+{
+    saveBlocked = true;
+    sLog.outError("Auction %u transaction failed; entry blocked until authoritative reload.", Id);
+}
+
+bool AuctionEntry::QueueWinningBid(PlayerInventoryTransaction& transaction)
 {
     moneyDeliveryTime = time(NULL) + HOUR;
+    return CharacterDatabase.PExecute("UPDATE `auction` SET `itemguid` = 0, `moneyTime` = '" UI64FMTD "', `buyguid` = '%u', `lastbid` = '%u' WHERE `id` = '%u'", (uint64)moneyDeliveryTime, bidder, bid, Id) &&
+        sAuctionMgr.SendAuctionWonMail(this, transaction);
+}
 
-    CharacterDatabase.BeginTransaction();
-    CharacterDatabase.PExecute("UPDATE `auction` SET `itemguid` = 0, `moneyTime` = '" UI64FMTD "', `buyguid` = '%u', `lastbid` = '%u' WHERE `id` = '%u'", (uint64)moneyDeliveryTime, bidder, bid, Id);
-    if (newbidder)
+bool AuctionEntry::AuctionBidWinning()
+{
+    PlayerInventoryTransaction transaction(CharacterDatabase, {});
+    if (saveBlocked || !transaction.Begin())
     {
-        newbidder->SaveInventoryAndGoldToDB();
+        return false;
     }
-    CharacterDatabase.CommitTransaction();
-
-    sAuctionMgr.SendAuctionWonMail(this);
+    transaction.OnFailure([this] { BlockSaves(); });
+    AuctionEntry next = *this;
+    if (!next.QueueWinningBid(transaction))
+    {
+        return false;
+    }
+    transaction.OnCommit([this, next] { *this = next; });
+    return transaction.Commit();
 }
 
 /**
@@ -1351,11 +1389,17 @@ void AuctionEntry::AuctionBidWinning(Player* newbidder)
  *
  * @param newbid The new bid amount.
  * @param newbidder The player placing the bid.
- * @return true if the auction remains active after the update; otherwise, false.
+ * @return true only after the bid or buyout has committed.
  */
 bool AuctionEntry::UpdateBid(uint32 newbid, Player* newbidder /*=NULL*/)
 {
-    Player* auction_owner = owner ? sObjectMgr.GetPlayer(ObjectGuid(HIGHGUID_PLAYER, owner)) : NULL;
+    PlayerInventoryTransaction transaction(CharacterDatabase, {newbidder});
+    if (saveBlocked || !transaction.Begin())
+    {
+        return false;
+    }
+    transaction.OnFailure([this] { BlockSaves(); });
+    AuctionEntry next = *this;
 
     // bid can't be greater buyout
     if (buyout && newbid > buyout)
@@ -1376,30 +1420,29 @@ bool AuctionEntry::UpdateBid(uint32 newbid, Player* newbidder /*=NULL*/)
 
         if (bidder)                                     // return money to old bidder if present
         {
-            WorldSession::SendAuctionOutbiddedMail(this);
+            if (!WorldSession::SendAuctionOutbiddedMail(this, transaction))
+            {
+                return false;
+            }
         }
     }
 
-    bidder = newbidder ? newbidder->GetGUIDLow() : 0;
-    bid = newbid;
+    next.bidder = newbidder ? newbidder->GetGUIDLow() : 0;
+    next.bid = newbid;
 
     if ((newbid < buyout) || (buyout == 0))                 // bid
     {
-        // after this update we should save player's money ...
-        CharacterDatabase.BeginTransaction();
-        CharacterDatabase.PExecute("UPDATE `auction` SET `buyguid` = '%u', `lastbid` = '%u' WHERE `id` = '%u'", bidder, bid, Id);
-        if (newbidder)
+        if (!CharacterDatabase.PExecute("UPDATE `auction` SET `buyguid` = '%u', `lastbid` = '%u' WHERE `id` = '%u'", next.bidder, next.bid, Id))
         {
-            newbidder->SaveInventoryAndGoldToDB();
+            return false;
         }
-        CharacterDatabase.CommitTransaction();
-        return true;
     }
-    else                                                    // buyout
+    else if (!next.QueueWinningBid(transaction))
     {
-        AuctionBidWinning(newbidder);
         return false;
     }
+    transaction.OnCommit([this, next] { *this = next; });
+    return transaction.Commit();
 }
 
 /** @} */

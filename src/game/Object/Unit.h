@@ -70,6 +70,7 @@
 #include "SpellAuraDefines.h"
 #include "UpdateFields.h"
 #include "SharedDefines.h"
+#include "StatSystem.h"
 #include "ThreatManager.h"
 #include "HostileRefManager.h"
 #include "FollowerReference.h"
@@ -462,23 +463,6 @@ enum UnitMods
     UNIT_MOD_POWER_START = UNIT_MOD_MANA,
     UNIT_MOD_POWER_END = UNIT_MOD_RUNIC_POWER + 1
 };
-
-enum BaseModGroup
-{
-    CRIT_PERCENTAGE,
-    RANGED_CRIT_PERCENTAGE,
-    OFFHAND_CRIT_PERCENTAGE,
-    SHIELD_BLOCK_VALUE,
-    BASEMOD_END
-};
-
-enum BaseModType
-{
-    FLAT_MOD,
-    PCT_MOD
-};
-
-#define MOD_END (PCT_MOD+1)
 
 enum DeathState
 {
@@ -2282,7 +2266,7 @@ uint32  GetPower(Powers power) const { return GetUInt32Value(UNIT_FIELD_POWER1 +
          * @param damageInfo contains info about what kind of damage we will do etc
          * @param durabilityLoss whether or not durability loss should happen
          */
-        void DealSpellDamage(SpellNonMeleeDamage* damageInfo, bool durabilityLoss);
+        uint32 DealSpellDamage(SpellNonMeleeDamage* damageInfo, bool durabilityLoss);
 
         // player or player's pet resilience (-1%)
         float GetMeleeCritChanceReduction() const { return GetCombatRatingReduction(CR_CRIT_TAKEN_MELEE); }
@@ -2344,7 +2328,7 @@ uint32  GetPower(Powers power) const { return GetUInt32Value(UNIT_FIELD_POWER1 +
          * @param canReflect whether or not this spell can be reflected
          * @return Whether or not the spell was resisted/blocked etc.
          */
-        SpellMissInfo SpellHitResult(Unit* pVictim, SpellEntry const* spell, bool canReflect = false);
+        SpellMissInfo SpellHitResult(Unit* pVictim, SpellEntry const* spell, bool canReflect = false, bool consumeReflect = true);
 
         /**
          * Returns the units dodge chance
@@ -3242,6 +3226,10 @@ uint32  GetPower(Powers power) const { return GetUInt32Value(UNIT_FIELD_POWER1 +
          * @param s the new \ref DeathState this \ref Unit should get
          */
         virtual void SetDeathState(DeathState s);           // overwritten in Creature/Player/Pet
+        uint64 GetCombatEpoch() const { return m_combatEpoch; }
+        void AdvanceCombatEpoch();
+        void StageCoaAura(SpellAuraHolder* previous, SpellAuraHolder* replacement);
+        void ActivateCoaAura(SpellAuraHolder* previous, SpellAuraHolder* replacement);
 
         ObjectGuid const& GetOwnerGuid() const { return  GetGuidValue(UNIT_FIELD_SUMMONEDBY); }
         void SetOwnerGuid(ObjectGuid owner) { SetGuidValue(UNIT_FIELD_SUMMONEDBY, owner); }
@@ -3732,7 +3720,7 @@ uint32  GetPower(Powers power) const { return GetUInt32Value(UNIT_FIELD_POWER1 +
 
         // stat system
         bool HandleStatModifier(UnitMods unitMod, UnitModifierType modifierType, float amount, bool apply);
-        void SetModifierValue(UnitMods unitMod, UnitModifierType modifierType, float value) { m_auraModifiersGroup[unitMod][modifierType] = value; }
+        void SetModifierValue(UnitMods unitMod, UnitModifierType modifierType, float value);
         float GetModifierValue(UnitMods unitMod, UnitModifierType modifierType) const;
         float GetTotalStatValue(Stats stat) const;
         float GetTotalAuraModValue(UnitMods unitMod) const;
@@ -4053,6 +4041,7 @@ uint32  GetPower(Powers power) const { return GetUInt32Value(UNIT_FIELD_POWER1 +
         DeathState m_deathState; ///< The current state of life/death for this \ref Unit
 
         SpellAuraHolderMap m_spellAuraHolders;
+        uint64 m_combatEpoch = 0;
         SpellAuraHolderMap::iterator m_spellAuraHoldersUpdateIterator; // != end() in Unit::m_spellAuraHolders update and point to next element
         AuraList m_deletedAuras;                            // auras removed while in ApplyModifier and waiting deleted
         SpellAuraHolderList m_deletedHolders;
@@ -4071,6 +4060,7 @@ uint32  GetPower(Powers power) const { return GetUInt32Value(UNIT_FIELD_POWER1 +
 
         AuraList m_modAuras[TOTAL_AURAS];
         float m_auraModifiersGroup[UNIT_MOD_END][MODIFIER_TYPE_END];
+        StatSystem::PercentModifier m_statPercentModifiers[UNIT_MOD_END][2];
         float m_weaponDamage[MAX_ATTACK][2];
         bool m_canModifyStats;
         // std::list< spellEffectPair > AuraSpells[TOTAL_AURAS];  // TODO: use this if ok for mem

@@ -58,9 +58,9 @@ class WorldGateway : public proto::IWorldGateway
 
         proto::AuthLookup LookupAccount(const proto::AuthRequest& request) override;
 
-        proto::SessionId Attach(const proto::AuthRequest& request,
-                                const std::shared_ptr<proto::IClientLink>& link,
-                                const std::shared_ptr<proto::AuthContext>& context) override;
+        proto::AttachResult Attach(const proto::AuthRequest& request,
+                                   const std::shared_ptr<proto::IClientLink>& link,
+                                   const std::shared_ptr<proto::AuthContext>& context) override;
 
         void TracePacket(proto::SessionId session, const WorldPacket& packet,
                          bool incoming) override;

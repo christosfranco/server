@@ -30,6 +30,7 @@
  */
 
 #include "Spell.h"
+#include "CoaCombatIntegration.h"
 #include "Database/DatabaseEnv.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -141,7 +142,19 @@ void Spell::cancel()
  */
 void Spell::cast(bool skipCheck)
 {
+    struct CombatScope
+    {
+        Player* owner = nullptr;
+        ~CombatScope() { if (owner) { owner->EndCoaCombatCast(); } }
+    } combatScope;
     SetExecutedCurrently(true);
+    if (m_coaSuppressSlots && !UsesCoaCombatRules())
+    {
+        SendCastResult(SPELL_FAILED_SPELL_UNAVAILABLE);
+        finish(false);
+        SetExecutedCurrently(false);
+        return;
+    }
 
     if (!m_caster->CheckAndIncreaseCastCounter())
     {
@@ -198,6 +211,53 @@ void Spell::cast(bool skipCheck)
             m_caster->DecreaseCastCounter();
             SetExecutedCurrently(false);
             return;
+        }
+    }
+
+    if (UsesCoaCombatRules())
+    {
+        if (!m_coaTargetsPrepared)
+        {
+            FillTargetMap();
+            m_coaTargetsPrepared = true;
+        }
+        m_coaTargetLives.size = 0;
+        uint64 lastImpact = 0;
+        bool hasOtherTarget = false;
+        for (auto const& hit : m_UniqueTargetInfo)
+        {
+            auto* unit = ObjectLookup::GetUnit(*m_caster, hit.targetGUID);
+            if (!unit || !m_coaTargetLives.Push(CoaCombatIntegration::Identify(*unit)))
+            {
+                SendCastResult(SPELL_FAILED_BAD_TARGETS);
+                finish(false);
+                m_caster->DecreaseCastCounter();
+                SetExecutedCurrently(false);
+                return;
+            }
+            hasOtherTarget = hasOtherTarget || unit != m_caster;
+            lastImpact = std::max(lastImpact, hit.timeDelay);
+        }
+        m_coaAwaitingImpact = hasOtherTarget && lastImpact > 0;
+        if (m_coaAwaitingImpact)
+        {
+            // Keep self/counter companions with the projectile outcome, not at launch.
+            for (auto& hit : m_UniqueTargetInfo) { hit.timeDelay = lastImpact; }
+        }
+        castResult = PrepareCoaCombatRules();
+        if (castResult != SPELL_CAST_OK || (!m_coaAwaitingImpact && !PublishCoaCombatRules()))
+        {
+            SendCastResult(castResult != SPELL_CAST_OK ? castResult : SPELL_FAILED_TRY_AGAIN);
+            finish(false);
+            m_caster->DecreaseCastCounter();
+            SetExecutedCurrently(false);
+            return;
+        }
+        if (m_coaAwaitingImpact) { m_coaTransaction.reset(); }
+        else
+        {
+            combatScope.owner = static_cast<Player*>(m_caster);
+            combatScope.owner->BeginCoaCombatCast();
         }
     }
 
@@ -465,7 +525,7 @@ void Spell::cast(bool skipCheck)
     }
 #endif /* ENABLE_ELUNA */
 
-    FillTargetMap();
+    if (!m_coaTargetsPrepared) { FillTargetMap(); }
 
     if (m_spellState == SPELL_STATE_FINISHED)               // stop cast if spell marked as finish somewhere in FillTargetMap
     {
@@ -480,6 +540,14 @@ void Spell::cast(bool skipCheck)
     TakePower();
     TakeReagents();                                         // we must remove reagents before HandleEffects to allow place crafted item in same slot
     TakeAmmo();
+    if (m_coaTransaction)
+    {
+        // Prepared linked children are released only after the ordinary parent
+        // debit. Their summed power budget was checked during preparation.
+        combatScope.owner->EndCoaCombatCast();
+        combatScope.owner = nullptr;
+        m_coaTransaction->ReleaseCasts();
+    }
 
     SendCastResult(castResult);
     SendSpellGo();                                          // we must send smsg_spell_go packet before m_castItem delete in TakeCastItem()...
@@ -699,6 +767,7 @@ void Spell::_handle_finish_phase()
  */
 void Spell::SendSpellCooldown()
 {
+    if (m_coaLinkedPrepared) { return; } // Parent admission owns policy-child recovery.
     if (m_caster->GetTypeId() != TYPEID_PLAYER)
     {
         return;

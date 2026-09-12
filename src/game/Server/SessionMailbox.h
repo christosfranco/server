@@ -28,6 +28,7 @@
 
 #include "LockedQueue/LockedQueue.h"
 #include "WorldPacket.h"
+#include "IWorldGateway.h"
 
 #include <memory>
 #include <mutex>
@@ -35,9 +36,12 @@
 class SessionMailbox
 {
     public:
-        SessionMailbox() = default;
+        explicit SessionMailbox(proto::ConnectionProfile profile = proto::ConnectionProfile::Stock)
+            : m_profile(profile) {}
         ~SessionMailbox();
 
+        /// Consumes ownership even on rejection. Unsupported opcodes are dropped
+        /// without closing the mailbox.
         bool Enqueue(std::unique_ptr<WorldPacket> packet);
         bool Next(WorldPacket*& packet);
 
@@ -47,15 +51,22 @@ class SessionMailbox
             std::lock_guard<std::mutex> guard(m_stateLock);
             if (m_closed)
                 return false;
-            return m_packets.next(packet, checker);
+            bool found = m_packets.next(packet, checker);
+            if (found && packet->GetOpcode() == 0x727)
+            {
+                m_coaQueued = false;
+            }
+            return found;
         }
 
         void Close();
         bool IsClosed() const;
 
     private:
+        proto::ConnectionProfile const m_profile;
         mutable std::mutex m_stateLock;
         bool m_closed = false;
+        bool m_coaQueued = false;
         MaNGOS::LockedQueue<WorldPacket*> m_packets;
 };
 

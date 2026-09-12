@@ -67,6 +67,17 @@ bool SqlPlainRequest::ExecuteLocked(SqlConnection* conn)
     return conn->Execute(m_sql);
 }
 
+bool SqlExpectedRowsRequest::ExecuteLocked(SqlConnection* conn)
+{
+    if (!SqlPlainRequest::ExecuteLocked(conn))
+    {
+        return false;
+    }
+    std::unique_ptr<QueryResult> count(conn->Query("SELECT ROW_COUNT()"));
+    return count && count->GetRowCount() == 1 && !count->Fetch()[0].IsNULL() &&
+        count->Fetch()[0].GetString()[0] != '-' && count->Fetch()[0].GetUInt64() == m_expectedRows;
+}
+
 /**
  * @brief Destructor for SqlTransaction
  *
@@ -124,7 +135,17 @@ bool SqlTransaction::ExecuteLocked(SqlConnection* conn)
         }
     }
 
-    return conn->CommitTransaction();
+    if (conn->CommitTransaction())
+    {
+        return true;
+    }
+    // A failed COMMIT is ambiguous. Do not leave a surviving transaction on
+    // the shared write connection; callers must still treat the outcome as unknown.
+    if (!conn->RollbackTransaction())
+    {
+        sLog.outError("SqlTransaction: rollback after failed commit failed");
+    }
+    return false;
 }
 
 /**

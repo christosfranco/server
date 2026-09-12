@@ -111,6 +111,10 @@ class SpellAuraHolder
 
         uint32 GetStackAmount() const { return m_stackAmount; }
         void SetStackAmount(uint32 stackAmount);
+        bool IsCoaControlled() const { return m_coaControlled; }
+        void SetCoaControlled(uint64 ownerEpoch) { m_coaControlled = true; m_coaOwnerEpoch = ownerEpoch; }
+        bool RouteCoaMutation(int32 amount, bool absolute = false, bool remove = false);
+        uint64 GetCoaExpiry() const { return m_coaExpiresAt; }
         bool ModStackAmount(int32 num); // return true if last charge dropped
 
         //TODO: Check that index isn't out of bounds
@@ -168,7 +172,7 @@ class SpellAuraHolder
         int32 GetAuraMaxDuration() const { return m_maxDuration; }
         void SetAuraMaxDuration(int32 duration);
         int32 GetAuraDuration() const { return m_duration; }
-        void SetAuraDuration(int32 duration) { m_duration = duration; }
+        void SetAuraDuration(int32 duration);
 
         uint8 GetAuraSlot() const { return m_auraSlot; }
         void SetAuraSlot(uint8 slot) { m_auraSlot = slot; }
@@ -222,6 +226,9 @@ class SpellAuraHolder
         ~SpellAuraHolder();
     private:
         SpellEntry const* m_spellProto;
+        bool m_coaControlled = false;
+        uint64 m_coaOwnerEpoch = 0;
+        uint64 m_coaExpiresAt = 0;
 
         Unit* m_target;
         ObjectGuid m_casterGuid;

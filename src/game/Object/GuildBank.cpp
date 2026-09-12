@@ -41,6 +41,7 @@
 #include "ObjectMgr.h"
 #include "PlayerRegistry.h"
 #include "Player.h"
+#include "InventoryTransaction.h"
 #include "Item.h"
 #include "World.h"
 #include "WorldSession.h"
@@ -198,7 +199,7 @@ void Guild::DisplayGuildBankContentUpdate(uint8 TabId, GuildItemPosCountVec cons
 
 Item* Guild::GetItem(uint8 TabId, uint8 SlotId)
 {
-    if (TabId >= GetPurchasedTabs() || SlotId >= GUILD_BANK_MAX_SLOTS)
+    if (m_bankSaveBlocked || TabId >= GetPurchasedTabs() || SlotId >= GUILD_BANK_MAX_SLOTS)
     {
         return NULL;
     }
@@ -271,6 +272,11 @@ uint32 Guild::GetBankRights(uint32 rankId, uint8 TabId) const
 // This load should be called on startup only
 void Guild::LoadGuildBankFromDB()
 {
+    if (m_bankSaveBlocked)
+    {
+        sLog.outError("Guild %u bank reload refused on stale cache; a fresh authoritative object is required.", m_Id);
+        return;
+    }
     //                                                      0        1          2          3
     QueryResult* result = CharacterDatabase.PQuery("SELECT `TabId`, `TabName`, `TabIcon`, `TabText` FROM `guild_bank_tab` WHERE `guildid`='%u' ORDER BY `TabId`", m_Id);
     if (!result)
@@ -398,6 +404,10 @@ bool Guild::MemberMoneyWithdraw(uint32 amount, uint32 LowGuid)
 
 void Guild::SetBankMoney(int64 money)
 {
+    if (m_bankSaveBlocked)
+    {
+        return;
+    }
     if (money < 0)                                          // I don't know how this happens, it does!!
     {
         money = 0;
@@ -432,6 +442,10 @@ bool Guild::MemberItemWithdraw(uint8 TabId, uint32 LowGuid)
 
 bool Guild::IsMemberHaveRights(uint32 LowGuid, uint8 TabId, uint32 rights) const
 {
+    if (m_bankSaveBlocked)
+    {
+        return false;
+    }
     MemberList::const_iterator itr = members.find(LowGuid);
     if (itr == members.end())
     {
@@ -448,6 +462,10 @@ bool Guild::IsMemberHaveRights(uint32 LowGuid, uint8 TabId, uint32 rights) const
 
 uint32 Guild::GetMemberSlotWithdrawRem(uint32 LowGuid, uint8 TabId)
 {
+    if (m_bankSaveBlocked)
+    {
+        return 0;
+    }
     MemberList::iterator itr = members.find(LowGuid);
     if (itr == members.end())
     {
@@ -478,6 +496,10 @@ uint32 Guild::GetMemberSlotWithdrawRem(uint32 LowGuid, uint8 TabId)
 
 uint32 Guild::GetMemberMoneyWithdrawRem(uint32 LowGuid)
 {
+    if (m_bankSaveBlocked)
+    {
+        return 0;
+    }
     MemberList::iterator itr = members.find(LowGuid);
     if (itr == members.end())
     {
@@ -925,7 +947,7 @@ Item* Guild::StoreItem(uint8 tabId, GuildItemPosCountVec const& dest, Item* pIte
 // Return stored item (if stored to stack, it can diff. from pItem). And pItem ca be deleted in this case.
 Item* Guild::_StoreItem(uint8 tab, uint8 slot, Item* pItem, uint32 count, bool clone)
 {
-    if (!pItem)
+    if (m_bankSaveBlocked || !pItem)
     {
         return NULL;
     }
@@ -979,6 +1001,10 @@ Item* Guild::_StoreItem(uint8 tab, uint8 slot, Item* pItem, uint32 count, bool c
 
 void Guild::RemoveItem(uint8 tab, uint8 slot)
 {
+    if (m_bankSaveBlocked)
+    {
+        return;
+    }
     m_TabListMap[tab]->Slots[slot] = NULL;
     CharacterDatabase.PExecute("DELETE FROM `guild_bank_item` WHERE `guildid`='%u' AND `TabId`='%u' AND `SlotId`='%u'",
                                GetId(), uint32(tab), uint32(slot));
@@ -1359,8 +1385,20 @@ void Guild::SwapItems(Player* pl, uint8 BankTab, uint8 BankTabSlot, uint8 BankTa
     }
 }
 
+void Guild::BlockBankSaves()
+{
+    m_bankSaveBlocked = true;
+    sLog.outError("Guild %u bank transaction failed; bank access blocked until authoritative reload.", m_Id);
+}
+
 void Guild::MoveFromBankToChar(Player* pl, uint8 BankTab, uint8 BankTabSlot, uint8 PlayerBag, uint8 PlayerSlot, uint32 SplitedAmount)
 {
+    if (m_bankSaveBlocked || !pl->CanSaveInventory())
+    {
+        return;
+    }
+    PlayerInventoryTransaction transaction(CharacterDatabase, {pl});
+    transaction.OnFailure([this] { BlockBankSaves(); });
     Item* pItemBank = GetItem(BankTab, BankTabSlot);
     Item* pItemChar = pl->GetItemByPos(PlayerBag, PlayerSlot);
 
@@ -1405,17 +1443,21 @@ void Guild::MoveFromBankToChar(Player* pl, uint8 BankTab, uint8 BankTabSlot, uin
             return;
         }
 
-        CharacterDatabase.BeginTransaction();
+        if (!transaction.Begin())
+        {
+            delete pNewItem;
+            return;
+        }
         LogBankEvent(GUILD_BANK_LOG_WITHDRAW_ITEM, BankTab, pl->GetGUIDLow(), pItemBank->GetEntry(), SplitedAmount);
 
         pItemBank->SetCount(pItemBank->GetCount() - SplitedAmount);
         pItemBank->FSetState(ITEM_CHANGED);
         pItemBank->SaveToDB();                              // not in inventory and can be save standalone
         pl->MoveItemToInventory(dest, pNewItem, true);
-        pl->SaveInventoryAndGoldToDB();
-
-        MemberItemWithdraw(BankTab, pl->GetGUIDLow());
-        CharacterDatabase.CommitTransaction();
+        if (!MemberItemWithdraw(BankTab, pl->GetGUIDLow()) || !transaction.Commit())
+        {
+            return;
+        }
     }
     else                                                    // Bank -> Char swap with slot (move)
     {
@@ -1430,15 +1472,18 @@ void Guild::MoveFromBankToChar(Player* pl, uint8 BankTab, uint8 BankTabSlot, uin
                 return;
             }
 
-            CharacterDatabase.BeginTransaction();
+            if (!transaction.Begin())
+            {
+                return;
+            }
             LogBankEvent(GUILD_BANK_LOG_WITHDRAW_ITEM, BankTab, pl->GetGUIDLow(), pItemBank->GetEntry(), pItemBank->GetCount());
 
             RemoveItem(BankTab, BankTabSlot);
             pl->MoveItemToInventory(dest, pItemBank, true);
-            pl->SaveInventoryAndGoldToDB();
-
-            MemberItemWithdraw(BankTab, pl->GetGUIDLow());
-            CharacterDatabase.CommitTransaction();
+            if (!MemberItemWithdraw(BankTab, pl->GetGUIDLow()) || !transaction.Commit())
+            {
+                return;
+            }
         }
         else                                                // Bank <-> Char swap items
         {
@@ -1495,7 +1540,10 @@ void Guild::MoveFromBankToChar(Player* pl, uint8 BankTab, uint8 BankTabSlot, uin
                 }
             }
 
-            CharacterDatabase.BeginTransaction();
+            if (!transaction.Begin())
+            {
+                return;
+            }
             LogBankEvent(GUILD_BANK_LOG_WITHDRAW_ITEM, BankTab, pl->GetGUIDLow(), pItemBank->GetEntry(), pItemBank->GetCount());
             if (pItemChar)
             {
@@ -1511,10 +1559,10 @@ void Guild::MoveFromBankToChar(Player* pl, uint8 BankTab, uint8 BankTabSlot, uin
             }
 
             pl->MoveItemToInventory(iDest, pItemBank, true);
-            pl->SaveInventoryAndGoldToDB();
-
-            MemberItemWithdraw(BankTab, pl->GetGUIDLow());
-            CharacterDatabase.CommitTransaction();
+            if (!MemberItemWithdraw(BankTab, pl->GetGUIDLow()) || !transaction.Commit())
+            {
+                return;
+            }
         }
     }
     DisplayGuildBankContentUpdate(BankTab, BankTabSlot);
@@ -1522,6 +1570,12 @@ void Guild::MoveFromBankToChar(Player* pl, uint8 BankTab, uint8 BankTabSlot, uin
 
 void Guild::MoveFromCharToBank(Player* pl, uint8 PlayerBag, uint8 PlayerSlot, uint8 BankTab, uint8 BankTabSlot, uint32 SplitedAmount)
 {
+    if (m_bankSaveBlocked || !pl->CanSaveInventory())
+    {
+        return;
+    }
+    PlayerInventoryTransaction transaction(CharacterDatabase, {pl});
+    transaction.OnFailure([this] { BlockBankSaves(); });
     Item* pItemBank = GetItem(BankTab, BankTabSlot);
     Item* pItemChar = pl->GetItemByPos(PlayerBag, PlayerSlot);
 
@@ -1577,15 +1631,21 @@ void Guild::MoveFromCharToBank(Player* pl, uint8 PlayerBag, uint8 PlayerSlot, ui
                             pItemChar->GetProto()->Name1, pItemChar->GetEntry(), SplitedAmount, m_Id);
         }
 
-        CharacterDatabase.BeginTransaction();
+        if (!transaction.Begin())
+        {
+            delete pNewItem;
+            return;
+        }
         LogBankEvent(GUILD_BANK_LOG_DEPOSIT_ITEM, BankTab, pl->GetGUIDLow(), pItemChar->GetEntry(), SplitedAmount);
 
         pl->ItemRemovedQuestCheck(pItemChar->GetEntry(), SplitedAmount);
         pItemChar->SetCount(pItemChar->GetCount() - SplitedAmount);
         pItemChar->SetState(ITEM_CHANGED);
-        pl->SaveInventoryAndGoldToDB();
         StoreItem(BankTab, dest, pNewItem);
-        CharacterDatabase.CommitTransaction();
+        if (!transaction.Commit())
+        {
+            return;
+        }
 
         DisplayGuildBankContentUpdate(BankTab, dest);
     }
@@ -1604,15 +1664,20 @@ void Guild::MoveFromCharToBank(Player* pl, uint8 PlayerBag, uint8 PlayerSlot, ui
                                 m_Id);
             }
 
-            CharacterDatabase.BeginTransaction();
+            if (!transaction.Begin())
+            {
+                return;
+            }
             LogBankEvent(GUILD_BANK_LOG_DEPOSIT_ITEM, BankTab, pl->GetGUIDLow(), pItemChar->GetEntry(), pItemChar->GetCount());
 
             pl->MoveItemFromInventory(PlayerBag, PlayerSlot, true);
             pItemChar->DeleteFromInventoryDB();
 
             StoreItem(BankTab, dest, pItemChar);
-            pl->SaveInventoryAndGoldToDB();
-            CharacterDatabase.CommitTransaction();
+            if (!transaction.Commit())
+            {
+                return;
+            }
 
             DisplayGuildBankContentUpdate(BankTab, dest);
         }
@@ -1656,7 +1721,10 @@ void Guild::MoveFromCharToBank(Player* pl, uint8 PlayerBag, uint8 PlayerSlot, ui
                                 m_Id);
             }
 
-            CharacterDatabase.BeginTransaction();
+            if (!transaction.Begin())
+            {
+                return;
+            }
             if (pItemBank)
             {
                 LogBankEvent(GUILD_BANK_LOG_WITHDRAW_ITEM, BankTab, pl->GetGUIDLow(), pItemBank->GetEntry(), pItemBank->GetCount());
@@ -1675,12 +1743,14 @@ void Guild::MoveFromCharToBank(Player* pl, uint8 PlayerBag, uint8 PlayerSlot, ui
             {
                 pl->MoveItemToInventory(iDest, pItemBank, true);
             }
-            pl->SaveInventoryAndGoldToDB();
-            if (pItemBank)
+            if (pItemBank && !MemberItemWithdraw(BankTab, pl->GetGUIDLow()))
             {
-                MemberItemWithdraw(BankTab, pl->GetGUIDLow());
+                return;
             }
-            CharacterDatabase.CommitTransaction();
+            if (!transaction.Commit())
+            {
+                return;
+            }
 
             DisplayGuildBankContentUpdate(BankTab, gDest);
         }

@@ -24,6 +24,7 @@
  */
 
 #include "Player.h"
+#include "ComboRules.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -106,9 +107,9 @@ void Player::SendComboPoints()
  * @param target The unit receiving combo points.
  * @param count The number of combo points to add.
  */
-void Player::AddComboPoints(Unit* target, int8 count)
+void Player::AddComboPoints(Unit* target, int32 count)
 {
-    if (!count)
+    if (!count || !target)
     {
         return;
     }
@@ -118,7 +119,7 @@ void Player::AddComboPoints(Unit* target, int8 count)
 
     if (target->GetObjectGuid() == m_comboTargetGuid)
     {
-        m_comboPoints += count;
+        m_comboPoints = ComboRules::AddPoints(m_comboPoints, count, true);
     }
     else
     {
@@ -129,18 +130,9 @@ void Player::AddComboPoints(Unit* target, int8 count)
             }
 
         m_comboTargetGuid = target->GetObjectGuid();
-        m_comboPoints = count;
+        m_comboPoints = ComboRules::AddPoints(0, count, false);
 
         target->AddComboPointHolder(GetGUIDLow());
-    }
-
-    if (m_comboPoints > 5)
-    {
-        m_comboPoints = 5;
-    }
-    if (m_comboPoints < 0)
-    {
-        m_comboPoints = 0;
     }
 
     SendComboPoints();
@@ -170,5 +162,4 @@ void Player::ClearComboPoints()
 
     m_comboTargetGuid.Clear();
 }
-
 

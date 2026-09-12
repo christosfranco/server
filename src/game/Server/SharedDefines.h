@@ -3185,11 +3185,10 @@ enum TrackedAuraType
     MAX_TRACKED_AURA_TYPES
 };
 
-// we need to stick to 1 version or half of the stuff will work for someone
-// others will not and opposite
-// will only support WoW, WoW:TBC and WoW:WotLK 3.3.5a client build 12340...
+// Stock 3.3.5a plus Ascension's reported world build for local compatibility
+// testing. Build admission alone does not establish protocol or Warden support.
 
-#define EXPECTED_MANGOSD_CLIENT_BUILD        {12340, 0}
+#define EXPECTED_MANGOSD_CLIENT_BUILD        {12340, 12344, 0}
 #define EXPECTED_MANGOSD_CLIENT_VERSION      "3.3.5a"
 
 // max supported expansion level in mangosd

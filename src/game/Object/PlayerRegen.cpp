@@ -30,6 +30,7 @@
  */
 
 #include "Player.h"
+#include "PowerRules.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -115,7 +116,8 @@ void Player::RewardRage(uint32 damage, uint32 weaponSpeedHitFactor, bool attacke
 
     addRage *= sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_RAGE_INCOME);
 
-    ModifyPower(POWER_RAGE, uint32(addRage * 10));
+    SetPower(POWER_RAGE, PowerRules::ApplyGain(GetPower(POWER_RAGE), GetMaxPower(POWER_RAGE),
+        addRage * 10.0f));
 }
 
 /**
@@ -123,6 +125,12 @@ void Player::RewardRage(uint32 damage, uint32 weaponSpeedHitFactor, bool attacke
  */
 void Player::RegenerateAll(uint32 diff)
 {
+    if (!IsAlive())
+    {
+        ResetPowerRegen();
+        return;
+    }
+
     // Not in combat or they have regeneration
     if (!IsInCombat() || HasAuraType(SPELL_AURA_MOD_REGEN_DURING_COMBAT) ||
         HasAuraType(SPELL_AURA_MOD_HEALTH_REGEN_IN_COMBAT) || IsPolymorphed())
@@ -131,7 +139,7 @@ void Player::RegenerateAll(uint32 diff)
         if (!IsInCombat() && !HasAuraType(SPELL_AURA_INTERRUPT_REGEN))
         {
             Regenerate(POWER_RAGE, diff);
-            if (getClass() == CLASS_DEATH_KNIGHT)
+            if (getClass() == CLASS_DEATH_KNIGHT || (IsCoaManaged() && GetMaxPower(POWER_RUNIC_POWER)))
             {
                 Regenerate(POWER_RUNIC_POWER, diff);
             }
@@ -139,6 +147,15 @@ void Player::RegenerateAll(uint32 diff)
     }
 
     Regenerate(POWER_ENERGY, diff);
+
+    // CoA-managed focus users tick at the catalog rate; a non-CoA class whose
+    // DisplayPower is FOCUS (PLAN 22.4b, the Ranger) ticks at the fallback
+    // rate in Regenerate() above. GetMaxPower is 0 for every other class, so
+    // the call is a no-op for them either way.
+    if (GetMaxPower(POWER_FOCUS))
+    {
+        Regenerate(POWER_FOCUS, diff);
+    }
 
     Regenerate(POWER_MANA, diff);
 
@@ -158,10 +175,17 @@ void Player::RegenerateAll(uint32 diff)
 // diff contains the time in milliseconds since last regen.
 void Player::Regenerate(Powers power, uint32 diff)
 {
-    uint32 curValue = GetPower(power);
-    uint32 maxValue = GetMaxPower(power);
+    if (power < POWER_MANA || power >= MAX_POWERS)
+    {
+        return;
+    }
+    if (!IsAlive())
+    {
+        ResetPowerRegen();
+        return;
+    }
 
-    float addvalue = 0.0f;
+    double addvalue = 0.0;
 
     switch (power)
     {
@@ -194,6 +218,29 @@ void Player::Regenerate(Powers power, uint32 diff)
             addvalue = 20 * EnergyRate;
             break;
         }
+        case POWER_FOCUS:
+        {
+            if (IsCoaManaged())
+            {
+                addvalue = 2.0 * PowerRules::FocusRatePerSecond(
+                    sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_FOCUS),
+                    GetTotalAuraMultiplierByMiscValue(SPELL_AURA_MOD_POWER_REGEN_PERCENT, POWER_FOCUS));
+            }
+            else
+            {
+                // PLAN 22.4b. Stock 3.3.5a had no player class whose
+                // DisplayPower is FOCUS (Hunter is MANA on this build), so a
+                // non-CoA class with a FOCUS pool (the Ranger, DisplayPower 2,
+                // granted by Unit::GetCreatePowers) still refills it between
+                // casts at the pet-side rate. CoA-managed players use the
+                // catalog rate above.
+                ChrClassesEntry const* cEntry =
+                    sChrClassesStore.LookupEntry(getClass());
+                if (cEntry && cEntry->DisplayPower == POWER_FOCUS)
+                    addvalue = 24 * sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_FOCUS);
+            }
+            break;
+        }
         case POWER_RUNIC_POWER:
         {
             float RunicPowerDecreaseRate = sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_RUNICPOWER_LOSS);
@@ -224,69 +271,52 @@ void Player::Regenerate(Powers power, uint32 diff)
                     SetRuneCooldown(rune, (cd < cd_diff) ? 0 : cd - cd_diff);
                 }
             }
-            break;
-        }
-        case POWER_FOCUS:
-        {
-            // Stock 3.3.5a had no player class whose DisplayPower is FOCUS
-            // (Hunter is MANA on this build), so this arm was a no-op. On
-            // Ascension the Ranger's ChrClasses.dbc DisplayPower is 2
-            // (POWER_FOCUS) and Unit::GetCreatePowers now grants such a
-            // class a 100-point pool -- match pet-side focus regen so the
-            // pool refills between casts (PLAN 22.4b). Every other class
-            // (including stock ones and Ascension classes whose Display-
-            // Power is not FOCUS) falls through the same no-op as before.
-            ChrClassesEntry const* cEntry =
-                sChrClassesStore.LookupEntry(getClass());
-            if (cEntry && cEntry->DisplayPower == POWER_FOCUS)
-                addvalue = 24 * sWorld.getConfig(CONFIG_FLOAT_RATE_POWER_FOCUS);
-            break;
+            return;
         }
         case POWER_HAPPINESS:
         case POWER_HEALTH:
-            break;
         default:
-            break;
+            return;
     }
 
     // Mana regen calculated in Player::UpdateManaRegen()
     // Exist only for POWER_MANA, POWER_ENERGY, POWER_FOCUS auras
-    if (power != POWER_MANA)
+    if (power != POWER_MANA && power != POWER_FOCUS)
     {
         AuraList const& ModPowerRegenPCTAuras = GetAurasByType(SPELL_AURA_MOD_POWER_REGEN_PERCENT);
         for (AuraList::const_iterator i = ModPowerRegenPCTAuras.begin(); i != ModPowerRegenPCTAuras.end(); ++i)
         {
             if ((*i)->GetModifier()->m_miscvalue == int32(power))
             {
-                addvalue *= ((*i)->GetModifier()->m_amount + 100) / 100.0f;
+                addvalue *= (double((*i)->GetModifier()->m_amount) + 100.0) / 100.0;
             }
         }
     }
 
-    // addvalue computed on a 2sec basis. => update to diff time
-    addvalue *= float(diff) / REGEN_TIME_FULL;
-
-    if (power != POWER_RAGE && power != POWER_RUNIC_POWER)
+    if (addvalue < 0 || !std::isfinite(addvalue))
     {
-        curValue += uint32(addvalue);
-        if (curValue > maxValue)
-        {
-            curValue = maxValue;
-        }
+        return;
     }
-    else
+    if (power == POWER_RAGE || power == POWER_RUNIC_POWER)
     {
-        if (curValue <= uint32(addvalue))
-        {
-            curValue = 0;
-        }
-        else
-        {
-            curValue -= uint32(addvalue);
-        }
+        addvalue = -addvalue;
     }
 
-    SetPower(power, curValue);
+    SetPower(power, PowerRules::Regenerate(GetPower(power), GetMaxPower(power),
+        addvalue * 1000.0 / REGEN_TIME_FULL, diff, m_powerRegenRemainder[power]));
+}
+
+void Player::ResetPowerRegen()
+{
+    PowerRules::ResetRegeneration(m_powerRegenRemainder, m_regenTimer, REGEN_TIME_FULL);
+}
+
+void Player::ClampPowerRegen(Powers power, uint32 current, uint32 maximum)
+{
+    if (power >= POWER_MANA && power < MAX_POWERS)
+    {
+        PowerRules::ClampRemainder(current, maximum, m_powerRegenRemainder[power]);
+    }
 }
 
 /**

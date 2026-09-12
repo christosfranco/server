@@ -63,14 +63,18 @@
 #include "LootMgr.h"
 #include "Unit.h"
 #include "Player.h"
+#include "CoaCombatRules.h"
+#include <memory>
 
 class WorldSession;
 class WorldPacket;
 class DynamicObj;
+class DynamicObject;
 class Item;
 class GameObject;
 class Group;
 class Aura;
+class CoaCombatTransaction;
 
 /// @brief Spell casting flag enumeration.
 ///
@@ -478,6 +482,14 @@ class Spell
         void TakeCastItem();
 
         SpellCastResult CheckCast(bool strict);
+        bool UsesCoaCombatRules() const;
+        SpellCastResult CheckCoaCombatRules();
+        SpellCastResult PrepareCoaCombatRules();
+        bool PublishCoaCombatRules();
+        SpellCastResult CollectCoaCombatEvents(std::vector<coa::combat::Event>& events, uint32 depth = 0);
+        SpellCastResult PrepareCoaLinkedCast(coa::combat::CastIntent const& intent);
+        void ExecuteCoaLinkedCast();
+        void ReportCoaDirectSpell(Unit* target, uint32 amount, bool healing, bool critical);
         SpellCastResult CheckPetCast(Unit* target);
 
         // handlers
@@ -760,6 +772,18 @@ class Spell
         float m_castPositionZ;
         float m_castOrientation;
         bool m_IsTriggeredSpell;
+        std::unique_ptr<CoaCombatTransaction> m_coaTransaction;
+        uint32 m_coaSuppressSlots = 0;
+        uint64 m_coaCastId = 0;
+        bool m_coaTargetsPrepared = false, m_coaLinkedPrepared = false;
+        uint32 m_coaRuleDepth = 0;
+        std::array<uint32_t, coa::combat::MaxRuleDepth> m_coaAncestors{};
+        std::optional<uint32> m_coaDuration;
+        coa::combat::Identity m_coaPreparedOwner;
+        coa::combat::Bounded<coa::combat::Identity, 32> m_coaTargetLives;
+        bool m_coaAwaitingImpact = false;
+        coa::combat::Location m_coaLocation;
+        std::array<std::unique_ptr<DynamicObject>, 3> m_coaPreparedAreas;
 
         // if need this can be replaced by Aura copy
         // we can't store original aura link to prevent access to deleted auras

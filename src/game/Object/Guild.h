@@ -315,9 +315,10 @@ class Guild
 
         bool Create(Player* leader, std::string gname);
         void CreateDefaultGuildRanks(int locale_idx);
-        void Disband();
+        bool CanDisband() const;
+        bool Disband();
 
-        void DeleteGuildBankItems(bool alsoInDB = false);
+        [[nodiscard]] bool DeleteGuildBankItems(bool alsoInDB = false);
         typedef std::unordered_map<uint32, MemberSlot> MemberList;
         typedef std::vector<RankInfo> RankList;
 
@@ -427,6 +428,8 @@ class Guild
         void   LogGuildEvent(uint8 EventType, ObjectGuid playerGuid1, ObjectGuid playerGuid2 = ObjectGuid(), uint8 newRank = 0);
 
         // ** Guild bank **
+        bool IsBankSaveBlocked() const { return m_bankSaveBlocked; }
+        void BlockBankSaves();
         // Content & item deposit/withdraw
         void   DisplayGuildBankContent(WorldSession* session, uint8 TabId);
         void   DisplayGuildBankMoneyUpdate(WorldSession* session);
@@ -504,6 +507,7 @@ class Guild
         uint32 m_GuildBankEventLogNextGuid_Item[GUILD_BANK_MAX_TABS];
 
         uint64 m_GuildBankMoney;
+        bool m_bankSaveBlocked = false;
 
     private:
         void UpdateAccountsNumber() { m_accountsNumber = 0;}// mark for lazy calculation at request in GetAccountsNumber

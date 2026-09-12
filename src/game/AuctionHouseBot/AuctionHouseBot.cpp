@@ -1286,8 +1286,12 @@ bool AuctionBotBuyer::IsBidableEntry(uint32 bidPrice, double InGame_BuyPrice, do
  */
 void AuctionBotBuyer::PlaceBidToEntry(AuctionEntry* auction, uint32 bidPrice)
 {
+    if (!auction->UpdateBid(bidPrice))
+    {
+        sLog.outError("AHBot: Bid transaction failed for auction %u.", auction->Id);
+        return;
+    }
     DEBUG_FILTER_LOG(LOG_FILTER_AHBOT_BUYER, "AHBot: Bid placed to entry %u, %.2fg", auction->Id, float(bidPrice) / 10000.0f);
-    auction->UpdateBid(bidPrice);
 }
 
 /**
@@ -1296,8 +1300,12 @@ void AuctionBotBuyer::PlaceBidToEntry(AuctionEntry* auction, uint32 bidPrice)
  */
 void AuctionBotBuyer::BuyEntry(AuctionEntry* auction)
 {
+    if (!auction->UpdateBid(auction->buyout))
+    {
+        sLog.outError("AHBot: Buyout transaction failed for auction %u.", auction->Id);
+        return;
+    }
     DEBUG_FILTER_LOG(LOG_FILTER_AHBOT_BUYER, "AHBot: Entry %u bought at %.2fg", auction->Id, float(auction->buyout) / 10000.0f);
-    auction->UpdateBid(auction->buyout);
 }
 
 /**

@@ -38,9 +38,25 @@ set(SRC_GRP_TESTS
     BigNumberTest.cpp
     Utf8Test.cpp
     ByteBufferTest.cpp
+    PrimitiveSafetyTest.cpp
+    CoaProtocolTest.cpp
+    CoaProgressionTest.cpp
+    CoaStarterTest.cpp
+    CoaCombatRulesTest.cpp
+    CoaCombatAdapterTest.cpp
+    # Value-only tests, not registration of these modifiers in gameplay.
+    CoaExtendedModifierRulesTest.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaExtendedModifierRules.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaCombatRules.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaStarter.cpp
+    CoaDatabaseTest.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaStore.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaCatalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaState.cpp
     SessionMailboxTest.cpp
     SessionProtocolPolicyTest.cpp
     WorldGatewayAuthTest.cpp
+    ClientConnectionAuthTest.cpp
     DatabaseVersionTest.cpp
     DatabaseConcurrencyTest.cpp
     OpenSSLProviderTest.cpp
@@ -55,6 +71,13 @@ set(SRC_GRP_TESTS
     ShadowClassifierTest.cpp
     UpdateBlockLayoutTest.cpp
     GeometryMathTest.cpp
+    SpellDispatchTest.cpp
+    PowerRulesTest.cpp
+    ComboRulesTest.cpp
+    CoaPowerRequirementsTest.cpp
+    PowerTriggerContextTest.cpp
+    CoaStatMechanicsTest.cpp
+    StatSystemTest.cpp
     DataIntegrityTest.cpp
     LFGLogicTest.cpp
     WardenCryptoContextTest.cpp
@@ -89,6 +112,7 @@ set(SRC_GRP_TESTS
     ${CMAKE_SOURCE_DIR}/src/game/WorldHandlers/UpdateBlockLayout.cpp
     ${CMAKE_SOURCE_DIR}/src/game/Server/SessionMailbox.cpp
     ${CMAKE_SOURCE_DIR}/src/game/Server/WorldGatewayAuth.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaProtocol.cpp
     # The movement arbiter's pure core: no Unit, no driver, no map.
     ${CMAKE_SOURCE_DIR}/src/game/MotionGenerators/Arbiter/MoveContract.cpp
     ${CMAKE_SOURCE_DIR}/src/game/MotionGenerators/Arbiter/ArbiterModel.cpp
@@ -110,11 +134,55 @@ source_group("tests" FILES ${SRC_GRP_TESTS})
 
 add_executable(mangos_tests ${SRC_GRP_TESTS})
 
+# The authored transfer suite depends on a private generated descriptor catalog.
+# Keep it separate from game/mangos_tests and explicitly skipped without that input.
+set(COA_VALUE_TRANSFER_TEST_HEADER "" CACHE FILEPATH "Explicit private descriptor header for value-only transfer tests")
+set(COA_VALUE_TRANSFER_TEST_SHA256 "" CACHE STRING "Independent SHA256 of the private transfer test header")
+if(COA_VALUE_TRANSFER_TEST_HEADER)
+    if(NOT IS_ABSOLUTE "${COA_VALUE_TRANSFER_TEST_HEADER}" OR
+       NOT EXISTS "${COA_VALUE_TRANSFER_TEST_HEADER}" OR IS_SYMLINK "${COA_VALUE_TRANSFER_TEST_HEADER}")
+        message(FATAL_ERROR "Transfer tests require an explicit regular private header")
+    endif()
+    file(SHA256 "${COA_VALUE_TRANSFER_TEST_HEADER}" transfer_header_sha)
+    if(NOT transfer_header_sha STREQUAL COA_VALUE_TRANSFER_TEST_SHA256)
+        message(FATAL_ERROR "Transfer test header independent SHA256 mismatch")
+    endif()
+    add_executable(coa_value_transfer_tests main.cpp CoaValueTransferRulesTest.cpp
+        ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaValueTransferRules.cpp
+        ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement/CoaCombatRules.cpp)
+    target_include_directories(coa_value_transfer_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement)
+    target_compile_definitions(coa_value_transfer_tests PRIVATE
+        COA_VALUE_TRANSFER_CATALOG_HEADER="${COA_VALUE_TRANSFER_TEST_HEADER}")
+    add_test(NAME coa_value_transfer_tests COMMAND coa_value_transfer_tests)
+else()
+    add_test(NAME coa_value_transfer_tests COMMAND ${CMAKE_COMMAND} -E echo
+        "SKIP: private pinned value-transfer descriptor fixture not supplied")
+    set_tests_properties(coa_value_transfer_tests PROPERTIES SKIP_REGULAR_EXPRESSION "^SKIP:")
+endif()
+
+set(SOURCE_ROOT "${CMAKE_SOURCE_DIR}")
+set(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/PowerMethodBodies.inc")
+include("${CMAKE_CURRENT_SOURCE_DIR}/ExtractPowerMethodTests.cmake")
+set(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/CoaCombatMethodBodies.inc")
+include("${CMAKE_CURRENT_SOURCE_DIR}/ExtractCoaCombatMethods.cmake")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/game/WorldHandlers/SpellChecks.cpp"
+    "${CMAKE_SOURCE_DIR}/src/game/WorldHandlers/SpellPower.cpp"
+    "${CMAKE_SOURCE_DIR}/src/game/Object/SpellMgr.h")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/game/Object/PlayerCoaCombat.cpp"
+    "${CMAKE_SOURCE_DIR}/src/game/Object/ObjectGuid.cpp"
+    "${CMAKE_SOURCE_DIR}/src/game/WorldHandlers/SpellAuras.cpp")
+
 target_include_directories(mangos_tests
     PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR}
         ${CMAKE_SOURCE_DIR}/src/game/Warden
+        ${CMAKE_SOURCE_DIR}/src/game/Object
         ${CMAKE_SOURCE_DIR}/src/game/WorldHandlers
         ${CMAKE_SOURCE_DIR}/src/game/Server
+        ${CMAKE_SOURCE_DIR}/src/game/CharacterAdvancement
         ${CMAKE_SOURCE_DIR}/src/game/MotionGenerators)
 
 target_link_libraries(mangos_tests
@@ -126,7 +194,24 @@ target_link_libraries(mangos_tests
         extractor_data
         Threads::Threads
         mangos_openssl_strict
+        ZLIB::ZLIB
 )
+
+# Synthetic admission-only binary: no game library, DB test cases or listeners.
+add_executable(mangos_revision_tests
+    main.cpp
+    WorldGatewayAuthTest.cpp
+    ClientConnectionAuthTest.cpp
+    StatSystemTest.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/Server/WorldGatewayAuth.cpp
+    ${CMAKE_SOURCE_DIR}/src/game/Warden/WardenProtocol.cpp)
+target_include_directories(mangos_revision_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/game/Server
+    ${CMAKE_SOURCE_DIR}/src/game/Warden
+    ${CMAKE_SOURCE_DIR}/src/game/Object)
+target_link_libraries(mangos_revision_tests PRIVATE
+    proto mangos_openssl_strict ZLIB::ZLIB)
+add_test(NAME revision_admission COMMAND mangos_revision_tests)
 
 # Put the runtime DLLs beside the test binary so it can be run from the build tree.
 # A convenience, never a gate: the search is derived from the library that was actually
@@ -197,6 +282,8 @@ if(WIN32)
 endif()
 
 add_test(NAME mangos_tests COMMAND mangos_tests)
+add_test(NAME coa_combat_boundary COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_ROOT=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckCoaCombatBoundary.cmake)
 
 if(WIN32)
     set_tests_properties(mangos_tests PROPERTIES
@@ -227,6 +314,16 @@ add_test(NAME proto_boundary
     COMMAND ${CMAKE_COMMAND}
         -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckProtoBoundary.cmake)
+
+add_test(NAME coa_boundary
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckCoaBoundary.cmake)
+
+add_test(NAME power_boundary
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_ROOT=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/CheckPowerBoundary.cmake)
 
 add_test(NAME build_policy
     COMMAND ${CMAKE_COMMAND}
