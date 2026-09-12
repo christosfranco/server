@@ -281,6 +281,11 @@ SpellCastResult Spell::CollectCoaCombatEvents(std::vector<Event>& events, uint32
                 target = ObjectLookup::GetUnit(owner, hit.targetGUID);
             }
         }
+        // Triggered resource rewards credit the actor: the stock trigger
+        // lands the self-buff (Felfury off Twin Slice) on the caster, while
+        // the parent target above is the enemy. Target-aura resources keep
+        // the trigger target; Evaluate refuses any other combination.
+        if (target && FindResource(child->ID) && !IsTargetAuraResource(child->ID)) { target = &owner; }
         auto context = SpellResourceContext::ResolveTriggerContext(
             effect == SPELL_EFFECT_TRIGGER_SPELL ? SpellResourceContext::Trigger::Direct : SpellResourceContext::Trigger::WithValue,
             m_caster, target, true, child->EquippedItemClass >= 0, IsSpellWithCasterSourceTargetsOnly(child),

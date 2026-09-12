@@ -1127,7 +1127,9 @@ TEST(CoaCombat_lua_port_felsworn_demon_within_consumes_at_cap)
 {
     // 800222 known + 6 Felfury -> orb consumed to 0, Inner Demon 804216
     // applied for 30,000 ms. Below cap, unknown requires, or buff already
-    // up: no-op, and a further capping under the buff is left alone.
+    // up: no-op, and a further capping under the buff is left alone. The
+    // transform is deferred one event so the capping grant publishes the
+    // visible 6 first (the gate journals the wire max).
     Fixture f(14);
     f.Approve(1001, {800058});
     f.Approve(800058, {800058}); // At-cap consume: self-edge, like PolicyResourceEdge.
@@ -1138,13 +1140,16 @@ TEST(CoaCombat_lua_port_felsworn_demon_within_consumes_at_cap)
     CHECK_EQ(f.Value(800058), 6); // Requires 800222 unknown: orb sits at cap.
     CHECK(!f.AuraFor(804216));
     f.known.insert(800222);
-    f.Apply(f.Input(EventKind::Tick));
+    f.Apply(f.Input(EventKind::Tick)); // Cap was already reached: transform.
     CHECK_EQ(f.Value(800058), 0);
     REQUIRE(f.AuraFor(804216));
     CHECK_EQ(f.AuraFor(804216)->stacks, 1);
     CHECK_EQ(f.AuraFor(804216)->expiresMs, f.context.nowMs + 30000);
-    f.Apply(f.Gain(800058, 6));
-    CHECK_EQ(f.Value(800058), 6); // Buff up: further capping left alone.
+    f.Apply(f.Gain(800058, 6)); // Cap reached this event: published first...
+    CHECK_EQ(f.Value(800058), 6);
+    CHECK_EQ(f.AuraFor(804216)->stacks, 1);
+    f.Apply(f.Input(EventKind::Tick)); // ...then left alone: buff already up.
+    CHECK_EQ(f.Value(800058), 6);
     CHECK_EQ(f.AuraFor(804216)->stacks, 1);
 }
 
@@ -1155,12 +1160,16 @@ TEST(CoaCombat_lua_port_inner_demon_rearms_after_expiry)
     f.Approve(800058, {800058}); // At-cap consume: self-edge, like PolicyResourceEdge.
     f.known.insert(800222);
     f.Apply(f.Gain(800058, 6));
+    CHECK_EQ(f.Value(800058), 6); // Published first...
+    f.Apply(f.Input(EventKind::Tick)); // ...consumed on the next event.
     CHECK_EQ(f.Value(800058), 0);
     REQUIRE(f.AuraFor(804216));
     f.context.nowMs += 30000;
     f.Apply(f.Input(EventKind::Tick));
     CHECK(!f.AuraFor(804216));
     f.Apply(f.Gain(800058, 6));
+    CHECK_EQ(f.Value(800058), 6);
+    f.Apply(f.Input(EventKind::Tick));
     CHECK_EQ(f.Value(800058), 0);
     REQUIRE(f.AuraFor(804216));
 }

@@ -579,7 +579,11 @@ void Player::_SaveAuras()
     for (SpellAuraHolderMap::const_iterator itr = auraHolders.begin(); itr != auraHolders.end(); ++itr)
     {
         SpellAuraHolder* holder = itr->second;
-        if (holder->IsCoaControlled()) { continue; }
+        // Inner Demon (804216) persists: the combat rules assign it a finite
+        // life the native row (permanent) cannot rebuild, so the sweep keeps
+        // it and login re-imports it by spell id. Every other controlled
+        // holder stays policy-owned and unsaved.
+        if (holder->IsCoaControlled() && holder->GetId() != 804216) { continue; }
         if (IsCoaManaged() && coa::OwnsProjectionAura(m_coaManagedAuras.count(holder->GetId()),
             holder->GetCasterGuid() == GetObjectGuid(), !holder->GetCastItemGuid().IsEmpty(),
             holder->IsPassive(), holder->GetAuraMaxDuration()))

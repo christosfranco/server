@@ -309,12 +309,6 @@ namespace coa::combat
             return spell == 500149 || spell == 500706 || spell == 807389 ||
                 spell == 807533 || spell == 805077 || spell == 500363;
         }
-        bool TargetAura(uint32_t spell)
-        {
-            return spell == 557325 || spell == 570131 || spell == 680854 ||
-                spell == 804068 || spell == 804735 || spell == 804378 ||
-                spell == 806269 || spell == 806554 || spell == 804670 || spell == 804711;
-        }
         void SetMarker(Context const& c, State& s, uint32_t spell, bool active)
         {
             if (!active && !FindAura(s, spell, c.actor)) { return; }
@@ -333,7 +327,7 @@ namespace coa::combat
             }
             if (!Native(c, spell).exists) { throw Status::Failed; }
             if (amount < -10000 || amount > 10000) { throw Status::Invalid; }
-            if (!TargetAura(spell) && target != c.actor) { throw Status::Invalid; }
+            if (!IsTargetAuraResource(spell) && target != c.actor) { throw Status::Invalid; }
             if (spell == 500149 && amount > 0 && Count(s, 807440, c.actor)) { return; }
             if (spell == 500706 && amount < 0 && Count(s, 803061, c.actor) && !decay) { return; }
             auto& a = Cell(s, spell, target);
@@ -359,7 +353,7 @@ namespace coa::combat
             a.stacks = int32_t(std::clamp<int64_t>(total, 0, cap));
             if (!a.stacks) { a.expiresMs = 0; }
         }
-        void Markers(Context const& c, State& s)
+        void Markers(Context const& c, State& s, bool felswornCapped)
         {
             if (c.playerClass == 27)
             {
@@ -381,7 +375,14 @@ namespace coa::combat
             // Cleric Dawn ordering trap). Idempotent: below cap, requires
             // unknown, or buff already up is a no-op; while the buff is up a
             // further capping is left alone.
-            if (c.playerClass == 14 && Count(s, 800058, c.actor) >= 6 &&
+            //
+            // Deferred one event: the transform fires only if the cap was
+            // already reached BEFORE this event, so the capping grant
+            // publishes the visible 6 first (the gate journals the wire max)
+            // and the consume lands on the next event (the Refresh every
+            // cast closes with, or the next cast). A same-tick consume would
+            // erase the transient 6 before any wire state carried it.
+            if (felswornCapped && c.playerClass == 14 && Count(s, 800058, c.actor) >= 6 &&
                 Known(c, 800222) && !Count(s, 804216, c.actor))
             {
                 if (!Native(c, 804216).exists) { throw Status::Failed; }
@@ -441,7 +442,7 @@ namespace coa::combat
                     (a.charges && a.spell != 807440) ||
                     (a.capBonus && (a.capBonus != 1 || (a.spell != 804670 && a.spell != 804711))) ||
                     a.stacks > (r ? int32_t(r->cap) + a.capBonus : 1) ||
-                    (!TargetAura(a.spell) && a.target != s.actor) ||
+                    (!IsTargetAuraResource(a.spell) && a.target != s.actor) ||
                     (a.spell == 807440 && bool(a.stacks) != bool(a.charges))) { return false; }
                 for (std::size_t j = 0; j < i; ++j)
                 {
@@ -501,6 +502,12 @@ namespace coa::combat
     }
     bool operator!=(Identity const& a, Identity const& b) { return !(a == b); }
 
+    bool IsTargetAuraResource(uint32_t spell)
+    {
+        return spell == 557325 || spell == 570131 || spell == 680854 ||
+            spell == 804068 || spell == 804735 || spell == 804378 ||
+            spell == 806269 || spell == 806554 || spell == 804670 || spell == 804711;
+    }
     Generator const* FindGenerator(uint32_t spell)
     {
         // class_resources.lua CLASSES generators, same (spell, class,
@@ -988,7 +995,7 @@ namespace coa::combat
                     else { s.pending.values[keep++] = cast; }
                 }
                 s.pending.size = keep;
-                Markers(c, s);
+                Markers(c, s, Count(previous, 800058, c.actor) >= 6);
             }
 
             // Net deltas, not intermediate threshold/cost states, cross the commit boundary.

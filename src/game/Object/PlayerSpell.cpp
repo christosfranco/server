@@ -637,6 +637,15 @@ bool Player::IsNeedCastPassiveLikeSpellAtLearn(SpellEntry const* spellInfo) cons
  */
 void Player::learnSpell(uint32 spell_id, bool dependent)
 {
+    // Out-of-band grants (GM .learn, gate fixtures): a managed spell outside
+    // the committed build is owned like a quest grant, not refused. Without
+    // this the addSpell gate below silently drops it (the 23.4 class-27 red:
+    // .learn 804584 never landed, so no Solar flowed). Reconcile only learns
+    // allowed spells, so this is a no-op there (Remember skips reconciling).
+    if (IsCoaManagedSpell(spell_id) && !m_coaAllowedSpells.count(spell_id))
+    {
+        RememberCoaIndependentSpell(spell_id);
+    }
     PlayerSpellMap::iterator itr = m_spells.find(spell_id);
 
     bool disabled = (itr != m_spells.end()) ? itr->second.disabled : false;

@@ -101,6 +101,11 @@ namespace coa::combat
         uint32_t gateSpell; // Known/self-aura precondition, 0 when gate is None.
     };
     Generator const* FindGenerator(uint32_t spell);
+    // A resource whose holder may sit on a non-actor target (debuff-style
+    // resources). Every other resource credits the actor: Evaluate refuses
+    // any other target, and trigger recursion aims them at the owner (the
+    // stock trigger lands the self-buff on the caster).
+    bool IsTargetAuraResource(uint32_t spell);
     struct Resolution
     {
         bool exists = false, alive = false, inWorld = false;
