@@ -855,18 +855,26 @@ void WorldSession::HandleCoaReplace(WorldPacket& packet)
         return;
     }
     auto player = GetPlayer();
+    // The second string of 0x72C is free-form (the client shows it as the
+    // traversal text); on a refusal it names the gate that refused, so a
+    // client trace reads `why=combat` instead of a bare token. The token is
+    // unchanged and the string is never parsed by the client.
     if (!m_coaRequestGate.Accept(CoaRequestGate::Clock::now()))
     {
         if (player->SendCoaSnapshot())
         {
-            auto result = coa::analytic::BuildUpdateResultPacket(coa::analytic::ResultToken::GameModeNotAllowed, "", 0, 0);
+            auto result = coa::analytic::BuildUpdateResultPacket(coa::analytic::ResultToken::GameModeNotAllowed, "rate", 0, 0);
             SendPacket(&result);
         }
         return;
     }
     if (!player->IsInWorld() || !player->IsAlive() || player->IsInCombat() || player->IsBeingTeleported())
     {
-        auto result = coa::analytic::BuildUpdateResultPacket(coa::analytic::ResultToken::GameModeNotAllowed, "", 0, 0);
+        char const* why = !player->IsInWorld() ? "not_in_world"
+            : !player->IsAlive() ? "dead"
+            : player->IsInCombat() ? "combat"
+            : "teleporting";
+        auto result = coa::analytic::BuildUpdateResultPacket(coa::analytic::ResultToken::GameModeNotAllowed, why, 0, 0);
         SendPacket(&result);
         return;
     }
