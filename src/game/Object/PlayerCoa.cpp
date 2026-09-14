@@ -843,7 +843,13 @@ void Player::ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired)
     }
     auto token = status == coa::ApplyStatus::Applied ? coa::analytic::ResultToken::UpdateEntriesOk
         : status == coa::ApplyStatus::NoChange ? coa::analytic::ResultToken::NoDiff : coa::analytic::ResultToken::NotTraversible;
-    auto result = coa::analytic::BuildUpdateResultPacket(token, "", 0, 0);
+    // Refusals carry Replace()'s own reason in the free-form traversal string
+    // (the client shows it and never parses it), the same way HandleCoaReplace
+    // names its gate. A bare NOT_TRAVERSIBLE cannot say WHICH entry the
+    // traversal could not reach, and the client's authorizer and the core's
+    // can disagree -- that is exactly what a reader needs to see.
+    auto result = coa::analytic::BuildUpdateResultPacket(
+        token, token == coa::analytic::ResultToken::NotTraversible ? error : std::string(), 0, 0);
     GetSession()->SendPacket(&result);
 }
 

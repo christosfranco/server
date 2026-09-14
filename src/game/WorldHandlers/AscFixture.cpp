@@ -29,6 +29,7 @@
 #include "Unit.h"
 #include "World.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -475,24 +476,58 @@ namespace
         }
         if (verb == "engage" || verb == "kill")
         {
+            // Echo names and fields are the Lua's: `engage` echoes as
+            // "engage" {ok, entry, found, dist, dmg, boss_*}; `kill` echoes as
+            // "killblow" {entry, found, dealt, dead, boss_*} -- NOT "kill",
+            // which is AscProbe's own credit event on the probe file and what
+            // the gate reads for the killer (dungeons_test collects both).
+            bool killing = verb == "kill";
+            char const* echo = killing ? "killblow" : "engage";
             uint32 entry = uint32(Int(a, 0));
-            uint32 dmg = uint32(Int(a, 1, 1));
-            Creature* c = NearestOf(player, entry, 100.0f);
+            uint32 dmg = uint32(Int(a, 1, killing ? 100000 : 200));
+            Creature* c = NearestOf(player, entry, 200.0f);
             if (!c)
             {
-                Line(log, verb.c_str()).Num("entry", entry).Bool("found", false).Write();
+                Line(log, echo).Bool("ok", false).Num("entry", entry).Bool("found", false).Write();
                 return true;
             }
             player->SetFacingToObject(c);
-            uint32 before = c->GetHealth();
-            player->DealDamage(c, dmg, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL,
-                               nullptr, false);
-            Line(log, verb.c_str()).Num("entry", entry).Bool("found", true)
-                .Num("guidlow", c->GetGUIDLow()).Num("dmg", dmg)
-                .Num("hp_before", before)
-                .Num("hp", c->IsInWorld() ? c->GetHealth() : 0)
-                .Bool("alive", c->IsInWorld() && c->IsAlive())
-                .Bool("in_combat", c->IsInWorld() && c->IsInCombat()).Write();
+            float dist = player->Where().DistanceTo(c->Where());
+            if (!killing)
+            {
+                player->DealDamage(c, dmg, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL,
+                                   nullptr, false);
+                Line(log, echo).Bool("ok", true).Num("entry", entry).Bool("found", true)
+                    .Flt("dist", dist).Num("dmg", dmg)
+                    .Str("boss_name", c->GetName()).Num("boss_entry", c->GetEntry())
+                    .Num("boss_guid", c->GetGUIDLow())
+                    .Num("boss_hp", c->IsInWorld() ? c->GetHealth() : 0)
+                    .Num("boss_maxhp", c->GetMaxHealth()).Write();
+                return true;
+            }
+            // Bounded chunks so the killing blow is an ordinary swing from the
+            // player (credit + loot), never a one-shot overkill that some
+            // death paths short-circuit. The probe's own death/kill events
+            // record the result independently.
+            uint64 dealt = 0;
+            bool dead = false;
+            for (int i = 0; i < 40; ++i)
+            {
+                if (!c->IsInWorld() || !c->IsAlive()) { dead = true; break; }
+                uint32 hp = c->GetHealth();
+                if (hp == 0) { dead = true; break; }
+                uint32 step = std::min(dmg, hp);
+                player->DealDamage(c, step, nullptr, DIRECT_DAMAGE, SPELL_SCHOOL_MASK_NORMAL,
+                                   nullptr, false);
+                dealt += step;
+                if (!c->IsInWorld() || !c->IsAlive() || c->GetHealth() == 0) { dead = true; break; }
+            }
+            Line(log, echo).Num("entry", entry).Bool("found", true)
+                .Num("dealt", (long long)dealt).Bool("dead", dead)
+                .Str("boss_name", c->GetName()).Num("boss_entry", c->GetEntry())
+                .Num("boss_guid", c->GetGUIDLow())
+                .Num("boss_hp", c->IsInWorld() ? c->GetHealth() : 0)
+                .Num("boss_maxhp", c->GetMaxHealth()).Write();
             return true;
         }
         return false;
