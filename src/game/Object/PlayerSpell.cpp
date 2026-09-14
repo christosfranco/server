@@ -33,6 +33,7 @@
 #include "Common/ServerDefines.h"
 #include "Player.h"
 #include "StatSystem.h"
+#include "CoaProjection.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "Log.h"
@@ -120,7 +121,14 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
         }
         if (IsCoaManagedSpell(spell_id) && !m_coaAllowedSpells.count(spell_id))
         {
-            return false;
+            // Ordinary trainer spells persist independently of specialization.
+            // Loading trusted character rows is not a new acquisition request.
+            auto spell = sSpellStore.LookupEntry(spell_id);
+            if (learning || disabled || !spell || getLevel() < spell->SpellLevel || !IsCoaOrdinaryTrainingSpell(spell_id))
+            {
+                return false;
+            }
+            RememberCoaIndependentSpell(spell_id);
         }
     }
     SpellEntry const* spellInfo = sSpellStore.LookupEntry(spell_id);
@@ -1467,6 +1475,16 @@ TrainerSpellState Player::GetTrainerSpellState(TrainerSpell const* trainer_spell
     if (!trainer_spell->learnedSpell)
     {
         return TRAINER_SPELL_RED;
+    }
+
+    if (IsCoaManaged() && sWorld.GetCoaTrainingSpells().count(trainer_spell->learnedSpell))
+    {
+        if (!m_coaReady || m_coaFailed || !IsCoaOrdinaryTrainingSpell(trainer_spell->learnedSpell) ||
+            !coa::TrainingRankKnown(sWorld.GetCoaTrainingPreviousSpells(), trainer_spell->learnedSpell,
+                [this](uint32 id) { return HasSpell(id); }))
+        {
+            return TRAINER_SPELL_RED;
+        }
     }
 
     // known spell

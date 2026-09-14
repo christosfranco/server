@@ -1032,9 +1032,10 @@ void Player::_SaveSpells()
 
     for (PlayerSpellMap::iterator itr = m_spells.begin(), next = m_spells.begin(); itr != m_spells.end();)
     {
-        uint32 talentCosts = GetTalentSpellCost(itr->first);
+        bool ordinaryTraining = m_coaIndependentRoots.count(itr->first) && IsCoaOrdinaryTrainingSpell(itr->first);
+        uint32 talentCosts = ordinaryTraining ? 0 : GetTalentSpellCost(itr->first);
 
-        if (IsCoaManagedSpell(itr->first))
+        if (IsCoaManagedSpell(itr->first) && !ordinaryTraining)
         {
             stmtDel.PExecute(GetGUIDLow(), itr->first);
         }

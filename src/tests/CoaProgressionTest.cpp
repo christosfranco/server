@@ -5,6 +5,7 @@
 #include "SessionMailbox.h"
 #include "SessionProtocolPolicy.h"
 #include "DataIntegrity/Sha256.h"
+#include "DBCFileLoader.h"
 #include <cstdlib>
 #include <functional>
 #include <openssl/evp.h>
@@ -383,6 +384,148 @@ TEST(Coa_projection_shared_spells_rank_dependency_cycles_and_trigger_isolation)
     auto auras = coa::SpellClosure({200, 400}, resolve, true);
     CHECK(auras.count(20)); CHECK(!auras.count(10)); CHECK(!auras.count(76));
     CHECK(coa::SpellClosure({300755}, resolve, true).count(76));
+}
+
+TEST(Coa_revocation_keeps_missing_legacy_ids_without_authorizing_missing_grants)
+{
+    std::map<uint32_t, coa::SpellLinks> graph = {
+        {100, {0, {200}, {804255}}}, {200, {0, {}, {}}}};
+    auto exists = [&](uint32_t id) { return graph.count(id) != 0; };
+    auto resolve = [&](uint32_t id)
+    {
+        if (!exists(id))
+        {
+            throw std::invalid_argument("missing spell");
+        }
+        return graph.at(id);
+    };
+    CHECK((coa::RevocationClosure({100, 804255}, resolve, exists, true) ==
+        std::set<uint32_t>{100, 200, 804255}));
+    CHECK((coa::SpellClosure({100}, resolve) == std::set<uint32_t>{100, 200}));
+    CHECK(Rejected([&] { coa::SpellClosure({804255}, resolve); }));
+    CHECK(Rejected([&] { coa::SpellClosure({100}, resolve, true); }));
+}
+
+TEST(Coa_ordinary_class_spell_family_and_level_gate)
+{
+    for (uint32_t family = 18; family <= 38; ++family)
+    {
+        for (uint32_t level : {1, 4, 9, 10, 12, 60})
+        {
+            CHECK(coa::OrdinaryClassSpell(family, family, level));
+            CHECK(!coa::OrdinaryClassSpell(family, family + 1, level));
+        }
+        CHECK(!coa::OrdinaryClassSpell(family, family, 0));
+        CHECK(!coa::OrdinaryClassSpell(family, family, 61));
+    }
+    CHECK(!coa::OrdinaryClassSpell(0, 0, 1));
+}
+
+TEST(Coa_ordinary_training_native_rank_prerequisites)
+{
+    std::set<uint32_t> candidates{100, 101, 102, 200, 805651};
+    std::vector<coa::TrainingRank> rows{{1,100,100,1}, {2,100,101,2}, {3,100,102,3},
+        {4,805351,805351,1}, {5,805351,805651,2}, {6,900,901,2}};
+    auto exists = [&](uint32_t id) { return candidates.count(id) != 0; };
+    auto mapping = coa::TrainingPreviousSpells(candidates, rows, exists);
+    CHECK_EQ(mapping.at(100), 0u);
+    CHECK_EQ(mapping.at(101), 100u);
+    CHECK_EQ(mapping.at(102), 101u);
+    CHECK_EQ(mapping.at(200), 0u);
+    CHECK(!mapping.count(805651));
+    CHECK(!mapping.count(900)); CHECK(!mapping.count(901));
+    CHECK(!coa::TrainingRankKnown(mapping, 101, [](uint32_t) { return false; }));
+    CHECK(coa::TrainingRankKnown(mapping, 101, [](uint32_t id) { return id == 100; }));
+    CHECK(!coa::TrainingRankKnown(mapping, 102, [](uint32_t id) { return id == 100; }));
+    CHECK(!coa::TrainingRankKnown(mapping, 805651, [](uint32_t) { return true; }));
+    CHECK(coa::TrainingRankKnown(mapping, 200, [](uint32_t) { return false; }));
+}
+
+TEST(Coa_ordinary_training_malformed_rank_sequences_fail_closed)
+{
+    auto exists = [](uint32_t) { return true; };
+    std::vector<coa::TrainingRank> valid{{1,100,100,1}, {2,100,101,2}};
+    for (auto bad : std::vector<coa::TrainingRank>{{3,100,102,2}, {3,200,101,2},
+        {2,200,200,1}, {3,100,102,0}, {3,100,102,1}, {0,100,102,3}, {3,100,0,3}})
+    {
+        auto rows = valid;
+        rows.push_back(bad);
+        auto mapping = coa::TrainingPreviousSpells({100,101,300}, rows, exists);
+        CHECK(!mapping.count(100)); CHECK(!mapping.count(101)); CHECK(mapping.count(300));
+    }
+    CHECK(coa::TrainingPreviousSpells({101}, {{2,100,101,2}}, exists).empty());
+    CHECK(coa::TrainingPreviousSpells({102}, {{1,100,100,1}, {3,100,102,3}}, exists).empty());
+    CHECK(coa::TrainingPreviousSpells({100}, {{2,100,101,2}}, exists).empty());
+}
+
+TEST(Coa_ordinary_training_native_baked_rank_fixture)
+{
+    auto path = std::getenv("ASCENDER_TRAINING_DATA");
+    auto catalogPath = std::getenv("ASCENDER_COA_TSV");
+    auto pin = std::getenv("ASCENDER_COA_SHA256");
+    if (!path || !catalogPath || !pin)
+    {
+        std::printf("  SKIP native training artifact: set ASCENDER_TRAINING_DATA/ASCENDER_COA_TSV/ASCENDER_COA_SHA256\n");
+        return;
+    }
+    auto advancement = coa::Catalog::Load(catalogPath, pin)->AllSpells();
+    DBCFileLoader spells, trainers, ranks;
+    std::string base = std::string(path) + "/dbc/";
+    // Approved server projection, not the client's wider Spell.dbc layout.
+    REQUIRE(spells.Load((base + "Spell.dbc").c_str(), std::string(234, 'i').c_str()));
+    REQUIRE(trainers.Load((base + "NPCTrainer.dbc").c_str(), "iiii"));
+    REQUIRE(ranks.Load((base + "SpellRank.dbc").c_str(), "iiii"));
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> definitions;
+    for (uint32_t i = 0; i < spells.GetNumRows(); ++i)
+    {
+        auto row = spells.getRecord(i);
+        definitions.emplace(row.getUInt(0), std::make_pair(row.getUInt(39), row.getUInt(208)));
+    }
+    std::set<uint32_t> candidates;
+    for (uint32_t i = 0; i < trainers.GetNumRows(); ++i)
+    {
+        auto id = trainers.getRecord(i).getUInt(1);
+        auto found = definitions.find(id);
+        if (found != definitions.end() && found->second.first >= 1 && found->second.first <= 60 &&
+            !advancement.count(id))
+        {
+            candidates.insert(id);
+        }
+    }
+    std::vector<coa::TrainingRank> rows;
+    for (uint32_t i = 0; i < ranks.GetNumRows(); ++i)
+    {
+        auto row = ranks.getRecord(i);
+        rows.push_back({row.getUInt(0), row.getUInt(1), row.getUInt(2), row.getUInt(3)});
+    }
+    auto mapping = coa::TrainingPreviousSpells(candidates, rows,
+        [&](uint32_t id) { return definitions.count(id) != 0; });
+    std::set<uint32_t> families;
+    uint32_t later = 0;
+    for (auto const& entry : mapping)
+    {
+        CHECK(!advancement.count(entry.first));
+        families.insert(definitions.at(entry.first).second);
+        later += definitions.at(entry.first).first >= 10;
+    }
+    for (uint32_t family = 18; family <= 38; ++family) CHECK(families.count(family));
+    CHECK(later > 0);
+    for (uint32_t id : {560750,801718,653130,653234,653236,653242,801707,500232,706742})
+    {
+        CHECK(candidates.count(id)); CHECK(mapping.count(id));
+        CHECK(definitions.at(id).first <= 4);
+        CHECK_EQ(definitions.at(id).second, 34u);
+    }
+    CHECK_EQ(definitions.at(502573).first, 8u);
+    CHECK(mapping.count(502573)); CHECK(mapping.at(502573) != 0);
+    CHECK(!coa::TrainingRankKnown(mapping, 502573, [](uint32_t) { return false; }));
+    CHECK(coa::TrainingRankKnown(mapping, 502573,
+        [&](uint32_t id) { return id == mapping.at(502573); }));
+    CHECK(candidates.count(805651)); CHECK(!candidates.count(805351)); CHECK(!advancement.count(805351));
+    CHECK_EQ(mapping.at(805651), 805351u);
+    CHECK(!coa::TrainingRankKnown(mapping, 805651, [](uint32_t) { return false; }));
+    std::printf("  native rank check: %zu candidates, %zu valid, %u level10-60, Repair previous %u\n",
+        candidates.size(), mapping.size(), later, mapping.at(502573));
 }
 
 TEST(Coa_native_all_classes_specs_levels_and_300755_marker)

@@ -61,13 +61,13 @@ bool IsSupportedAccountClientOS(const std::string& os);
 proto::ConnectionProfile SelectConnectionProfile(uint32 build,
     bool ascensionStockAuthCompatibility);
 
-// Pinned patch-B realm-1 UIParent lifecycle + CoA Collections tabs + TOC closure.
+// Pinned realm-1 UIParent/CoA closure plus native trainer, clock and combat log.
 // :1 is explicit local client-UI trust policy, not a recovered vendor flag.
 inline constexpr char ASCENSION_KNOWN_ADDONS_DEFAULT[] =
     "Ascension_Collections:1,AscensionUI:1,Ascension_TalentUI:1,Ascension_CoATalents:1,"
     "Ascension_Warmode:1,Ascension_NamePlates:1,Ascension_NewPlayerExperience:1,"
     "Ascension_MythicPlus:1,Ascension_Manastorm:1,Ascension_VanityCollection:1,"
-    "Ascension_AppearanceUI:1";
+    "Ascension_AppearanceUI:1,Blizzard_TrainerUI:0,Blizzard_TimeManager:0,Blizzard_CombatLog:0";
 
 /** Empty disables; invalid manifests throw std::invalid_argument, never truncate. */
 std::shared_ptr<const WorldPacket> BuildAscensionKnownAddons(

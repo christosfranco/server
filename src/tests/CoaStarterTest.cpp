@@ -46,13 +46,14 @@ namespace
     }
     std::vector<coa::StarterProficiency> Proficiencies()
     {
-        // Includes the independently reported native restrictions, not an all-class mock.
-        return {{201,43,2,128,false,512,0,0,0,0,0,{{512,0xffffffff,0}}},
-            {1180,173,2,32768,false,512,0,0,0,0,0,{{512,0xffffffff,0}}},
-            {9116,433,4,64,false,1,0,0,0,0,0,{{1,0xffffffff,0}}},
-            {264,45,2,4,false,16896,0,0,0,0,0,{{16896,0xffffffff,0}}},
-            {266,46,2,8,false,4,0,0,0,0,0,{{4,0xffffffff,0}}},
-            {674,118,-1,0,true,909,0,0,0,0,0,{{909,0xffffffff,0}}}};
+        // Native restrictions, including the deployed DBC's minimum skill rank one.
+        return {{201,43,2,128,false,512,0,0,0,1,0,{{512,0xffffffff,0}}},
+            {1180,173,2,32768,false,512,0,0,0,1,0,{{512,0xffffffff,0}}},
+            {9116,433,4,64,false,1,0,0,0,1,0,{{1,0xffffffff,0}}},
+            {264,45,2,4,false,16896,0,0,0,1,0,{{16896,0xffffffff,0}}},
+            {266,46,2,8,false,4,0,0,0,1,0,{{4,0xffffffff,0}}},
+            {674,118,-1,0,true,909,0,0,0,1,20,{{0xffffffff,0xffffffff,1}}},
+            {370094,118,-1,0,true,4061165568u,0,0,0,1,0,{{0xffffffff,0xffffffff,1}}}};
     }
     bool Throws(std::function<void()> action)
     {
@@ -103,7 +104,9 @@ TEST(Coa_starter_dual_wield_shield_ammo_and_proficiency_are_real_requirements)
 {
     auto felsworn = coa::PlanStarter(contexts[2], 14, 1, Items(), Proficiencies());
     CHECK(felsworn.gear[0].id && felsworn.gear[1].id);
-    CHECK(felsworn.proficiencies.count(674));
+    CHECK(felsworn.proficiencies.count(370094));
+    CHECK(!felsworn.proficiencies.count(674));
+    CHECK(felsworn.skills.count(118));
     CHECK(!coa::StarterReady(felsworn, felsworn.gear, felsworn.skills, 0xffffffff, 0, false, true, 0, 100, 100, 0));
     auto equipment = felsworn.gear; equipment[1] = {};
     CHECK(!coa::StarterReady(felsworn, equipment, felsworn.skills, 0xffffffff, 0, true, true, 0, 100, 100, 0));
@@ -164,6 +167,8 @@ TEST(Coa_proficiency_sources_keep_class_race_skill_level_and_exclusion_gates)
     CHECK(!plan.nativeProficiencies.count(201));
     CHECK(!plan.nativeProficiencies.count(674));
     CHECK(!plan.proficiencies.count(674));
+    CHECK(coa::StarterProficiencyAccess(Proficiencies()[5], 14, 1) == Access::Denied);
+    CHECK(coa::StarterProficiencyAccess(Proficiencies()[6], 14, 1) == Access::Native);
     auto changed = p; changed.spell = 999201;
     CHECK(coa::StarterProficiencyAccess(changed, 12, 1) == Access::Denied);
     changed = p; changed.subclasses |= 32768;
@@ -174,7 +179,9 @@ TEST(Coa_proficiency_sources_keep_class_race_skill_level_and_exclusion_gates)
     CHECK(coa::StarterProficiencyAccess(changed, 12, 1) == Access::Denied);
     changed = p; changed.excludedClasses = uint32_t(1) << 11;
     CHECK(coa::StarterProficiencyAccess(changed, 12, 1) == Access::Denied);
-    changed = p; changed.minimumSkill = 1;
+    changed = p; changed.minimumSkill = 0;
+    CHECK(coa::StarterProficiencyAccess(changed, 12, 1) == Access::Policy);
+    changed.minimumSkill = 2;
     CHECK(coa::StarterProficiencyAccess(changed, 12, 1) == Access::Denied);
     changed = p; changed.level = 2;
     CHECK(coa::StarterProficiencyAccess(changed, 12, 1) == Access::Denied);
@@ -222,4 +229,15 @@ TEST(Coa_starter_book_matches_the_reference_starting_set)
     {
         CHECK(coa::StarterSpells(cls).empty());
     }
+}
+
+TEST(Coa_proficiency_accepts_native_weapon_marker_without_combat_effects)
+{
+    CHECK(coa::StarterProficiencyEffects({25, 60, 0}));
+    CHECK(coa::StarterProficiencyEffects({60, 0, 0}));
+    CHECK(coa::StarterProficiencyEffects({40, 0, 0}));
+    CHECK(!coa::StarterProficiencyEffects({25, 60, 2}));
+    CHECK(!coa::StarterProficiencyEffects({25, 40, 0}));
+    CHECK(!coa::StarterProficiencyEffects({25, 0, 0}));
+    CHECK(!coa::StarterProficiencyEffects({0, 0, 0}));
 }

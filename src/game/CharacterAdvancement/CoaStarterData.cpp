@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "CoaStarter.h"
 #include "CoaCatalog.h"
+#include "CoaProjection.h"
+#include "Log.h"
 #include "World.h"
 #include "ObjectMgr.h"
 #include "Item.h"
@@ -10,6 +12,66 @@
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>
+
+void World::InitializeCoaTraining()
+{
+    // Native loader 101d5e71 -> 101e7c80; IsTrainerSpell (10326d30) compares
+    // field 1 in this four-u32 table. The other two fields are not consumed here.
+    struct NativeTrainerEntry { uint32 id, spell; };
+    DBCStorage<NativeTrainerEntry> trainers("nixx");
+    if (!trainers.Load((GetDataPath() + "dbc/NPCTrainer.dbc").c_str()))
+    {
+        throw std::runtime_error("Native NPCTrainer.dbc missing or incompatible");
+    }
+    auto advancement = m_coaCatalog->AllSpells();
+    std::set<uint32> candidates;
+    for (uint32 i = 0; i < trainers.GetNumRows(); ++i)
+    {
+        auto row = trainers.LookupEntry(i);
+        auto spell = row ? sSpellStore.LookupEntry(row->spell) : nullptr;
+        if (spell && spell->SpellLevel >= 1 && spell->SpellLevel <= 60 && !advancement.count(row->spell))
+        {
+            candidates.insert(row->spell);
+        }
+    }
+    // Sequential indexing preserves duplicate row IDs for conflict validation.
+    DBCStorage<coa::TrainingRank> ranks("iiii");
+    if (!ranks.Load((GetDataPath() + "dbc/SpellRank.dbc").c_str()))
+    {
+        throw std::runtime_error("Native SpellRank.dbc missing or incompatible");
+    }
+    std::vector<coa::TrainingRank> rows;
+    for (uint32 i = 0; i < ranks.GetNumRows(); ++i)
+    {
+        if (auto row = ranks.LookupEntry(i))
+        {
+            rows.push_back(*row);
+        }
+    }
+    if (rows.empty())
+    {
+        throw std::runtime_error("Native SpellRank.dbc is empty");
+    }
+    m_coaTrainingPreviousSpells = coa::TrainingPreviousSpells(candidates, rows,
+        [](uint32 id) { return sSpellStore.LookupEntry(id) != nullptr; });
+    m_coaTrainingSpells.clear();
+    std::set<uint32> families;
+    for (auto const& mapping : m_coaTrainingPreviousSpells)
+    {
+        m_coaTrainingSpells.insert(mapping.first);
+        families.insert(sSpellStore.LookupEntry(mapping.first)->SpellClassSet);
+    }
+    for (uint32 cls = 12; cls <= 32; ++cls)
+    {
+        auto entry = sChrClassesStore.LookupEntry(cls);
+        if (!entry || !families.count(entry->SpellClassSet))
+        {
+            throw std::runtime_error("Native ordinary training is empty for class " + std::to_string(cls));
+        }
+    }
+    sLog.outString("Loaded %u ordinary native trainer spells (%u rejected rank mappings)",
+        uint32(m_coaTrainingSpells.size()), uint32(candidates.size() - m_coaTrainingSpells.size()));
+}
 
 void World::InitializeCoaStarters()
 {
@@ -75,21 +137,15 @@ void World::InitializeCoaStarters()
         {
             continue;
         }
-        bool proficiency = false, dualWield = false, otherEffect = false;
-        for (auto effect : spell->Effect)
-        {
-            proficiency |= effect == SPELL_EFFECT_PROFICIENCY;
-            dualWield |= effect == SPELL_EFFECT_DUAL_WIELD;
-            // PLAN 23.2: Blizzard's weapon-proficiency shape is
-            // [SPELL_EFFECT_WEAPON(25), SPELL_EFFECT_PROFICIENCY(60), 0] in
-            // stock Spell.dbc (49,839 rows) and unchanged in September's
-            // realm layer (239,067 rows). Stock never reached this filter
-            // (no CoA classes, compat off), so 25 is benign beside a
-            // proficiency; any other co-effect still fails closed.
-            otherEffect |= effect && effect != SPELL_EFFECT_PROFICIENCY &&
-                effect != SPELL_EFFECT_DUAL_WIELD && effect != SPELL_EFFECT_WEAPON;
-        }
-        if (otherEffect || (!proficiency && !dualWield) || spell->ManaCost || spell->ManaCostPct ||
+        // PLAN 23.2: Blizzard's weapon-proficiency shape is
+        // [SPELL_EFFECT_WEAPON(25), SPELL_EFFECT_PROFICIENCY(60), 0] in
+        // stock Spell.dbc (49,839 rows) and unchanged in September's
+        // realm layer (239,067 rows); 25 is benign beside a proficiency and
+        // any other co-effect fails closed. The rule is coa::StarterProficiencyEffects
+        // (CoaStarter.cpp), unit-tested in CoaStarterTest.
+        bool dualWield = IsSpellHaveEffect(spell, SPELL_EFFECT_DUAL_WIELD);
+        if (!coa::StarterProficiencyEffects({spell->Effect[0], spell->Effect[1], spell->Effect[2]}) ||
+            spell->ManaCost || spell->ManaCostPct ||
             spell->CasterAuraState || spell->TargetAuraState || spell->CasterAuraSpell || spell->TargetAuraSpell ||
             spell->ShapeshiftMask || spell->RequiresSpellFocus ||
             std::any_of(std::begin(spell->Reagent), std::end(spell->Reagent), [](int32 id) { return id > 0; }) ||

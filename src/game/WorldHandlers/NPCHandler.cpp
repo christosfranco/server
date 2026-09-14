@@ -52,6 +52,8 @@
 #include <cmath>
 #include <string>
 #include <algorithm>
+#include <array>
+#include "World.h"
 #include "Language.h"
 #include "Database/DatabaseEnv.h"
 #include "WorldPacket.h"
@@ -214,9 +216,21 @@ static void SendTrainerSpellHelper(WorldPacket& data, TrainerSpell const* tSpell
     data << uint8(reqLevel);
     data << uint32(tSpell->reqSkill);
     data << uint32(tSpell->reqSkillValue);
-    data << uint32(!tSpell->IsCastable() && chain_node ? (chain_node->prev ? chain_node->prev : chain_node->req) : 0);
-    data << uint32(!tSpell->IsCastable() && chain_node && chain_node->prev ? chain_node->req : 0);
-    data << uint32(0);
+    std::array<uint32, 3> required{{
+        !tSpell->IsCastable() && chain_node ? (chain_node->prev ? chain_node->prev : chain_node->req) : 0,
+        !tSpell->IsCastable() && chain_node && chain_node->prev ? chain_node->req : 0, 0}};
+    auto const& native = sWorld.GetCoaTrainingPreviousSpells();
+    auto previous = native.find(tSpell->learnedSpell);
+    if (previous != native.end() && previous->second &&
+        std::find(required.begin(), required.end(), previous->second) == required.end())
+    {
+        // The stock packet has three prerequisite slots. Preserve SQL requirements.
+        *std::find(required.begin(), required.end(), 0) = previous->second;
+    }
+    for (auto spell : required)
+    {
+        data << spell;
+    }
 }
 
 /**
@@ -256,6 +270,14 @@ void WorldSession::SendTrainerList(ObjectGuid guid, const std::string& strTitle)
 
     TrainerSpellData const* cSpells = unit->GetTrainerSpells();
     TrainerSpellData const* tSpells = unit->GetTrainerTemplateSpells();
+
+    TrainerSpellData nativeSpells;
+    if (Player::IsCoaTrainer(unit))
+    {
+        nativeSpells = _player->GetCoaTrainerSpells();
+        cSpells = &nativeSpells;
+        tSpells = nullptr;
+    }
 
     if (!cSpells && !tSpells)
     {
@@ -326,6 +348,10 @@ void WorldSession::SendTrainerList(ObjectGuid guid, const std::string& strTitle)
     data << strTitle;
 
     data.put<uint32>(count_pos, count);
+    if (Player::IsCoaTrainer(unit))
+    {
+        DETAIL_LOG("Native trainer list: class %u level %u services %u", _player->getClass(), _player->getLevel(), count);
+    }
     SendPacket(&data);
 }
 
@@ -363,6 +389,19 @@ void WorldSession::HandleTrainerBuySpellOpcode(WorldPacket& recv_data)
     // check present spell in trainer spell list
     TrainerSpellData const* cSpells = unit->GetTrainerSpells();
     TrainerSpellData const* tSpells = unit->GetTrainerTemplateSpells();
+
+    bool const nativeTrainer = Player::IsCoaTrainer(unit);
+    TrainerSpellData nativeSpells;
+    if (nativeTrainer)
+    {
+        if (!AcceptCoaRequest())
+        {
+            return;
+        }
+        nativeSpells = _player->GetCoaTrainerSpells();
+        cSpells = &nativeSpells;
+        tSpells = nullptr;
+    }
 
     if (!cSpells && !tSpells)
     {
@@ -406,7 +445,20 @@ void WorldSession::HandleTrainerBuySpellOpcode(WorldPacket& recv_data)
         return;
     }
 
-    _player->ModifyMoney(-int32(nSpellCost));
+    if (nativeTrainer)
+    {
+        if (!_player->TrainCoaOrdinarySpell(spellId))
+        {
+            WorldPacket failure(SMSG_TRAINER_BUY_FAILED, 16);
+            failure << guid << spellId << uint32(0);
+            SendPacket(&failure);
+            return;
+        }
+    }
+    else
+    {
+        _player->ModifyMoney(-int32(nSpellCost));
+    }
 
     SendPlaySpellVisual(guid, 0xB3);                        // visual effect on trainer
 
@@ -417,11 +469,11 @@ void WorldSession::HandleTrainerBuySpellOpcode(WorldPacket& recv_data)
 
     // learn explicitly or cast explicitly
     // TODO - Are these spells really cast correctly this way?
-    if (trainer_spell->IsCastable())
+    if (!nativeTrainer && trainer_spell->IsCastable())
     {
         _player->CastSpell(_player, trainer_spell->spell, true);
     }
-    else
+    else if (!nativeTrainer)
     {
         _player->learnSpell(spellId, false);
     }
@@ -430,6 +482,10 @@ void WorldSession::HandleTrainerBuySpellOpcode(WorldPacket& recv_data)
     data << ObjectGuid(guid);
     data << uint32(spellId);                                // should be same as in packet from client
     SendPacket(&data);
+    if (nativeTrainer)
+    {
+        SendTrainerList(guid);
+    }
 }
 
 /**
@@ -448,6 +504,14 @@ void WorldSession::HandleGossipHelloOpcode(WorldPacket& recv_data)
     if (!pCreature)
     {
         DEBUG_LOG("WORLD: HandleGossipHelloOpcode - %s not found or you can't interact with him.", guid.GetString().c_str());
+        return;
+    }
+
+    if (Player::IsCoaTrainer(pCreature))
+    {
+        GetPlayer()->PlayerTalkClass->ClearMenus();
+        GetPlayer()->PlayerTalkClass->CloseGossip();
+        SendTrainerList(pCreature->GetObjectGuid());
         return;
     }
 
@@ -509,6 +573,11 @@ void WorldSession::HandleGossipSelectOptionOpcode(WorldPacket& recv_data)
         if (!pCreature)
         {
             DEBUG_LOG("WORLD: HandleGossipSelectOptionOpcode - %s not found or you can't interact with it.", guid.GetString().c_str());
+            return;
+        }
+
+        if (Player::IsCoaTrainer(pCreature))
+        {
             return;
         }
 

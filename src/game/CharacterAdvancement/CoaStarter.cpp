@@ -19,6 +19,22 @@ namespace coa
         }
         return false;
     }
+    bool StarterProficiencyEffects(std::array<uint32_t, 3> const& effects)
+    {
+        bool proficiency = false, dualWield = false, weaponMarker = false;
+        for (auto effect : effects)
+        {
+            if (effect && effect != 60 && effect != 40 && effect != 25)
+            {
+                return false;
+            }
+            proficiency |= effect == 60;
+            dualWield |= effect == 40;
+            weaponMarker |= effect == 25;
+        }
+        // Native weapon proficiencies pair effect 25's usability marker with 60.
+        return (proficiency || dualWield) && (!weaponMarker || proficiency);
+    }
     bool StarterNeedsMana(StarterSpell const& spell)
     {
         return spell.power == 0 || spell.displayPower == 0;
@@ -109,6 +125,7 @@ namespace coa
                 throw std::invalid_argument("CoA starter requires native dual-wield proficiency");
             }
             plan.proficiencies.insert(dw->spell);
+            plan.skills.insert(dw->skill);
             if (StarterProficiencyAccess(*dw, playerClass, race) == ProficiencyAccess::Policy)
             {
                 plan.policyProficiencies.insert(dw->spell);
@@ -183,7 +200,8 @@ namespace coa
 
     ProficiencyAccess StarterProficiencyAccess(StarterProficiency const& p, uint32_t playerClass, uint32_t race)
     {
-        if (!p.spell || !p.skill || !playerClass || playerClass > 32 || !race || race > 32 || p.level > 1 || p.minimumSkill)
+        // Starter skills are initialized to rank one before proficiency spells.
+        if (!p.spell || !p.skill || !playerClass || playerClass > 32 || !race || race > 32 || p.level > 1 || p.minimumSkill > 1)
         {
             return ProficiencyAccess::Denied;
         }
@@ -202,10 +220,6 @@ namespace coa
                 playerClass == 30 || playerClass == 32;
         }
         if (!p.dualWield && p.spell == 1180 && p.skill == 173 && p.itemClass == 2 && p.subclasses == 32768)
-        {
-            exception = playerClass == 14;
-        }
-        if (p.dualWield && p.spell == 674 && p.skill == 118 && p.itemClass == -1 && p.subclasses == 0)
         {
             exception = playerClass == 14;
         }

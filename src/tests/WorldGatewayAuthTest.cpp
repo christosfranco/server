@@ -128,8 +128,8 @@ TEST(WorldGatewayAuth_known_addons_limits_and_pinned_defaults)
     uint32 count;
     defaults >> count;
     CHECK_EQ(defaults.GetOpcode(), uint16(0x94E));
-    CHECK_EQ(count, 11u);
-    CHECK_BYTES(defaults.contents(), 4, {11, 0, 0, 0});
+    CHECK_EQ(count, 14u);
+    CHECK_BYTES(defaults.contents(), 4, {14, 0, 0, 0});
     size_t expectedSize = 4;
     for (const char* expected : {"Ascension_Collections", "AscensionUI",
                                 "Ascension_TalentUI", "Ascension_CoATalents",
@@ -143,6 +143,15 @@ TEST(WorldGatewayAuth_known_addons_limits_and_pinned_defaults)
         defaults >> name >> secure;
         CHECK_STR(name, expected);
         CHECK_EQ(secure, uint8(1));
+        expectedSize += std::string(expected).size() + 2;
+    }
+    for (const char* expected : {"Blizzard_TrainerUI", "Blizzard_TimeManager", "Blizzard_CombatLog"})
+    {
+        std::string name;
+        uint8 secure;
+        defaults >> name >> secure;
+        CHECK_STR(name, expected);
+        CHECK_EQ(secure, uint8(0)); // Known native LoD UI, not additional secure-addon grants.
         expectedSize += std::string(expected).size() + 2;
     }
     CHECK_EQ(defaults.size(), expectedSize);

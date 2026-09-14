@@ -1860,13 +1860,14 @@ void Player::_LoadSpells(QueryResult* result)
 
             uint32 spell_id = fields[0].GetUInt32();
 
-            if (IsCoaManagedSpell(spell_id))
+            bool ordinaryTraining = IsCoaOrdinaryTrainingSpell(spell_id);
+            if (IsCoaManagedSpell(spell_id) && !ordinaryTraining)
             {
                 continue; // Native state is the only authority, including Talent.dbc overlaps.
             }
 
             // skip talents & drop unneeded data
-            if (GetTalentSpellPos(spell_id))
+            if (GetTalentSpellPos(spell_id) && !ordinaryTraining)
             {
                 sLog.outError("Player::_LoadSpells: %s has talent spell %u in character_spell, removing it.",
                               GetGuidStr().c_str(), spell_id);

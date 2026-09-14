@@ -37,7 +37,7 @@ ConfVersion=@MANGOS_WORLD_VER@
 #        packaged UI to enable bundled addons.
 #        This is NOT server authorization, a proof exemption, or Warden policy.
 #        Never populated from client-reported addons, wildcards, or name prefixes.
-#        Default: 11-name realm-1 UIParent lifecycle/CoA Collections tab + TOC closure
+#        Default: 11 Ascension UI closure names plus native trainer/clock/combat-log names
 #        in patch-B SHA256 154e8c6537794e3fe3127d658ca9fb43e5f7c488d71d7f8433ec1cf3fb5911d2.
 #        These TOCs have no Secure metadata: :1 is local policy, NOT vendor flags.
 #        Includes conditional nameplate/tutorial/instance loads and below-level-10
@@ -142,7 +142,7 @@ Ascension.CoA.CatalogSHA256 = ""
 # interaction, appended to this file. Empty disables. Read by the gates.
 Ascension.Probe.Path = ""
 Ascension.RequiredClientUpdate = ""
-Ascension.KnownAddons = "Ascension_Collections:1,AscensionUI:1,Ascension_TalentUI:1,Ascension_CoATalents:1,Ascension_Warmode:1,Ascension_NamePlates:1,Ascension_NewPlayerExperience:1,Ascension_MythicPlus:1,Ascension_Manastorm:1,Ascension_VanityCollection:1,Ascension_AppearanceUI:1"
+Ascension.KnownAddons = "Ascension_Collections:1,AscensionUI:1,Ascension_TalentUI:1,Ascension_CoATalents:1,Ascension_Warmode:1,Ascension_NamePlates:1,Ascension_NewPlayerExperience:1,Ascension_MythicPlus:1,Ascension_Manastorm:1,Ascension_VanityCollection:1,Ascension_AppearanceUI:1,Blizzard_TrainerUI:0,Blizzard_TimeManager:0,Blizzard_CombatLog:0"
 DataDir                      = "@CONF_INSTALL_DIR@"
 DataIntegrityCheck           = 1
 LogsDir                      = ""

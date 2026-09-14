@@ -40,6 +40,8 @@ static void Usage()
 
 int main(int argc, char** argv)
 {
+    // Keep parsed result lines intact beside asynchronous native diagnostics.
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     std::vector<std::string> only;
     std::vector<std::string> skip;
 

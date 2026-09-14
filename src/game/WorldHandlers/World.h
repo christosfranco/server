@@ -650,12 +650,15 @@ class World
         bool getConfig(eConfigBoolValues index) const { return m_configBoolValues[index]; }
 
         std::shared_ptr<coa::Catalog const> GetCoaCatalog() const { return m_coaCatalog; }
+        std::set<uint32> const& GetCoaTrainingSpells() const { return m_coaTrainingSpells; }
+        std::map<uint32, uint32> const& GetCoaTrainingPreviousSpells() const { return m_coaTrainingPreviousSpells; }
         coa::StarterPlan const* GetCoaStarter(uint32 playerClass, uint32 race) const
         {
             auto found = m_coaStarters.find({playerClass, race});
             return found == m_coaStarters.end() ? nullptr : &found->second;
         }
         void InitializeCoaStarters();
+        void InitializeCoaTraining();
         std::shared_ptr<const WorldPacket> GetAscensionKnownAddons() const
         {
             return std::atomic_load(&m_ascensionKnownAddons);
@@ -789,6 +792,8 @@ class World
         std::shared_ptr<const WorldPacket> m_ascensionKnownAddons;
         std::string m_requiredClientUpdate; ///< Written only before network startup.
         std::shared_ptr<coa::Catalog const> m_coaCatalog;
+        std::set<uint32> m_coaTrainingSpells;
+        std::map<uint32, uint32> m_coaTrainingPreviousSpells;
         std::map<std::pair<uint32, uint32>, coa::StarterPlan> m_coaStarters;
 
         int32 m_playerLimit;

@@ -755,6 +755,7 @@ void World::SetInitialWorldSettings()
                 }
             }
             InitializeCoaStarters();
+            InitializeCoaTraining();
             sLog.outString("Native CoA catalog loaded: %s (sha256 %s).",
                 sConfig.GetStringDefault("Ascension.CoA.CatalogPath", "").c_str(),
                 sConfig.GetStringDefault("Ascension.CoA.CatalogSHA256", "").c_str());

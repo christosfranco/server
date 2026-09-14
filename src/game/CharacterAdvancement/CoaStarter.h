@@ -57,6 +57,7 @@ namespace coa
         bool damagingTrigger;
     };
     bool StarterHasDamage(std::array<StarterEffect, 3> const& effects);
+    bool StarterProficiencyEffects(std::array<uint32_t, 3> const& effects);
     bool StarterNeedsMana(StarterSpell const& spell);
     uint32_t StarterBaseMana(StarterSpell const& spell, uint32_t nativeMana, uint32_t fallbackMana);
     uint32_t StarterPowerCapacity(StarterSpell const& spell, int32_t power, uint32_t baseMana);

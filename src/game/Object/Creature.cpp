@@ -1226,6 +1226,11 @@ bool Creature::IsTrainerOf(Player* pPlayer, bool msg) const
         return false;
     }
 
+    if (Player::IsCoaTrainer(this))
+    {
+        return pPlayer->IsCoaManaged();
+    }
+
     // pet trainers not have spells in fact now
     if (GetCreatureInfo()->TrainerType != TRAINER_TYPE_PETS)
     {

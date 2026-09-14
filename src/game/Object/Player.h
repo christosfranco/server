@@ -2429,7 +2429,12 @@ class Player : public Unit
         bool ChangeCoaLevel(uint32 level);
         bool ResetCoa(uint32 clearAtLogin);
         bool SendCoaSnapshot();
-        void ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired);
+        bool ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired);
+        static constexpr uint32 CoaTrainerGossipMenu = 60000;
+        static bool IsCoaTrainer(Creature const* creature);
+        bool IsCoaOrdinaryTrainingSpell(uint32 spell) const;
+        TrainerSpellData GetCoaTrainerSpells() const;
+        bool TrainCoaOrdinarySpell(uint32 spell);
 
         // Learn quest-rewarded spells
         void learnQuestRewardedSpells();
@@ -4124,6 +4129,7 @@ class Player : public Unit
         PlayerMails m_mail;
         PlayerSpellMap m_spells;
         coa::State m_coaState;
+        bool CanTrainCoaOrdinarySpell(uint32 spell) const;
         coa::combat::State m_coaCombat;
         std::set<uint32> m_coaCombatSpells;
         bool m_coaCombatPublishing = false;

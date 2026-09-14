@@ -10,47 +10,53 @@
 #include "CoaProjection.h"
 #include "CoaPowerRequirements.h"
 #include "Spell.h"
+#include "Creature.h"
+#include <algorithm>
+#include <iterator>
 #include <stdexcept>
+#include <tuple>
 
 namespace
 {
     // Learned dependencies and lower ranks are spellbook ownership. Triggered
     // effects are aura ownership only; granting them as castable spells is wrong.
+    coa::SpellLinks SpellDependencies(uint32 id)
+    {
+        auto spell = sSpellStore.LookupEntry(id);
+        if (!spell)
+        {
+            throw std::runtime_error("CoA spell dependency missing: " + std::to_string(id));
+        }
+        coa::SpellLinks links;
+        links.previous = sSpellMgr.GetPrevSpellInChain(id);
+        auto bounds = sSpellMgr.GetSpellLearnSpellMapBounds(id);
+        for (auto it = bounds.first; it != bounds.second; ++it)
+        {
+            links.learned.insert(it->second.spell);
+        }
+        for (unsigned effect = 0; effect < MAX_EFFECT_INDEX; ++effect)
+        {
+            uint32 triggered = spell->EffectTriggerSpell[effect];
+            if (!triggered) { continue; }
+            // Missing triggered targets are not fatal: the catalog compiler
+            // may pin an entry whose rank spell references a DBC row this
+            // snapshot lacks (class 32 Runemaster entry 4655 rank spell
+            // 806711 -> 725391 -> 7015, absent on this staged Spell.dbc).
+            // Skip the recursive add; the effect will not fire natively
+            // either because Spell::EffectTriggerSpell also LookupEntry's it.
+            if (!sSpellStore.LookupEntry(triggered)) { continue; }
+            if (spell->Effect[effect] == SPELL_EFFECT_LEARN_SPELL)
+            {
+                links.learned.insert(triggered);
+            }
+            links.triggered.insert(triggered);
+        }
+        return links;
+    }
+
     std::set<uint32> SpellClosure(std::set<uint32> const& seeds, bool auras = false)
     {
-        return coa::SpellClosure(seeds, [](uint32 id)
-        {
-            auto spell = sSpellStore.LookupEntry(id);
-            if (!spell)
-            {
-                throw std::runtime_error("CoA spell dependency missing: " + std::to_string(id));
-            }
-            coa::SpellLinks links;
-            links.previous = sSpellMgr.GetPrevSpellInChain(id);
-            auto bounds = sSpellMgr.GetSpellLearnSpellMapBounds(id);
-            for (auto it = bounds.first; it != bounds.second; ++it)
-            {
-                links.learned.insert(it->second.spell);
-            }
-            for (unsigned effect = 0; effect < MAX_EFFECT_INDEX; ++effect)
-            {
-                uint32 triggered = spell->EffectTriggerSpell[effect];
-                if (!triggered) { continue; }
-                // Missing triggered targets are not fatal: the catalog compiler
-                // may pin an entry whose rank spell references a DBC row this
-                // snapshot lacks (class 32 Runemaster entry 4655 rank spell
-                // 806711 -> 725391 -> 7015, absent on this staged Spell.dbc).
-                // Skip the recursive add; the effect will not fire natively
-                // either because Spell::EffectTriggerSpell also LookupEntry's it.
-                if (!sSpellStore.LookupEntry(triggered)) { continue; }
-                if (spell->Effect[effect] == SPELL_EFFECT_LEARN_SPELL)
-                {
-                    links.learned.insert(triggered);
-                }
-                links.triggered.insert(triggered);
-            }
-            return links;
-        }, auras);
+        return coa::SpellClosure(seeds, SpellDependencies, auras);
     }
 }
 
@@ -226,6 +232,18 @@ bool Player::PrepareCoaStarterInfrastructure()
     {
         return false;
     }
+    for (auto skill : plan->skills)
+    {
+        if (!HasSkill(skill) || GetPureSkillValue(skill) < 1)
+        {
+            auto entry = sSkillLineStore.LookupEntry(skill);
+            if (!entry)
+            {
+                return false;
+            }
+            SetSkill(skill, 1, entry->CategoryID == SKILL_CATEGORY_WEAPON ? GetMaxSkillValueForLevel() : 1);
+        }
+    }
     for (auto id : plan->proficiencies)
     {
         RememberCoaIndependentSpell(id);
@@ -238,18 +256,6 @@ bool Player::PrepareCoaStarterInfrastructure()
         // Loader admits only pure proficiency/dual-wield effects. Explicit cast
         // handles nonpassive native proficiency rows as well as passive rows.
         CastSpell(this, id, true);
-    }
-    for (auto skill : plan->skills)
-    {
-        if (!HasSkill(skill))
-        {
-            auto entry = sSkillLineStore.LookupEntry(skill);
-            if (!entry)
-            {
-                return false;
-            }
-            SetSkill(skill, 1, entry->CategoryID == SKILL_CATEGORY_WEAPON ? GetMaxSkillValueForLevel() : 1);
-        }
     }
     return !plan->dualWield || CanDualWield();
 }
@@ -573,6 +579,13 @@ bool Player::InitializeCoa(bool creating)
                 seeds.insert(spell.second);
             }
         }
+        for (auto spell : sWorld.GetCoaTrainingSpells())
+        {
+            if (IsCoaOrdinaryTrainingSpell(spell))
+            {
+                seeds.insert(spell);
+            }
+        }
         auto defaults = sObjectMgr.GetPlayerInfo(getRace(), getClass());
         for (auto spell : defaults->spell)
         {
@@ -581,10 +594,11 @@ bool Player::InitializeCoa(bool creating)
                 seeds.insert(spell);
             }
         }
-        m_coaManagedAuras = SpellClosure(seeds, true);
+        auto exists = [](uint32 id) { return sSpellStore.LookupEntry(id) != nullptr; };
+        m_coaManagedAuras = coa::RevocationClosure(seeds, SpellDependencies, exists, true);
         auto all = catalog->AllSpells();
         seeds.insert(all.begin(), all.end());
-        m_coaManagedSpells = SpellClosure(seeds);
+        m_coaManagedSpells = coa::RevocationClosure(seeds, SpellDependencies, exists);
         m_coaState.guid = GetGUIDLow();
         if (creating)
         {
@@ -816,11 +830,11 @@ bool Player::ResetCoa(uint32 clearAtLogin)
     return ReconcileCoaSpells() && SendCoaSnapshot();
 }
 
-void Player::ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired)
+bool Player::ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired)
 {
     if (!IsCoaManaged() || !m_coaReady || m_coaFailed)
     {
-        return;
+        return false;
     }
     coa::SqlStore store(CharacterDatabase, {getClass(), getLevel(), GetUInt32Value(PLAYER_XP)});
     std::string error;
@@ -831,15 +845,15 @@ void Player::ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired)
         m_coaFailed = true;
         sLog.outError("CoA apply failed for guid %u: %s", GetGUIDLow(), error.c_str());
         GetSession()->KickPlayer();
-        return;
+        return false;
     }
     if (status == coa::ApplyStatus::Applied && !ReconcileCoaSpells())
     {
-        return;
+        return false;
     }
     if (!SendCoaSnapshot())
     {
-        return;
+        return false;
     }
     auto token = status == coa::ApplyStatus::Applied ? coa::analytic::ResultToken::UpdateEntriesOk
         : status == coa::ApplyStatus::NoChange ? coa::analytic::ResultToken::NoDiff : coa::analytic::ResultToken::NotTraversible;
@@ -851,14 +865,15 @@ void Player::ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired)
     auto result = coa::analytic::BuildUpdateResultPacket(
         token, token == coa::analytic::ResultToken::NotTraversible ? error : std::string(), 0, 0);
     GetSession()->SendPacket(&result);
+    return status == coa::ApplyStatus::Applied;
 }
 
-void WorldSession::HandleCoaReplace(WorldPacket& packet)
+bool WorldSession::AcceptCoaRequest()
 {
     if (GetClientProfile() != proto::ConnectionProfile::AscensionStockAuthCoA || !GetPlayer() ||
         PlayerLoading() || isLogingOut() || !GetPlayer()->IsCoaManaged())
     {
-        return;
+        return false;
     }
     auto player = GetPlayer();
     // The second string of 0x72C is free-form (the client shows it as the
@@ -872,7 +887,7 @@ void WorldSession::HandleCoaReplace(WorldPacket& packet)
             auto result = coa::analytic::BuildUpdateResultPacket(coa::analytic::ResultToken::GameModeNotAllowed, "rate", 0, 0);
             SendPacket(&result);
         }
-        return;
+        return false;
     }
     if (!player->IsInWorld() || !player->IsAlive() || player->IsInCombat() || player->IsBeingTeleported())
     {
@@ -882,6 +897,134 @@ void WorldSession::HandleCoaReplace(WorldPacket& packet)
             : "teleporting";
         auto result = coa::analytic::BuildUpdateResultPacket(coa::analytic::ResultToken::GameModeNotAllowed, why, 0, 0);
         SendPacket(&result);
+        return false;
+    }
+    return true;
+}
+
+bool Player::IsCoaTrainer(Creature const* creature)
+{
+    return creature && creature->GetCreatureInfo() &&
+        creature->GetCreatureInfo()->GossipMenuId == CoaTrainerGossipMenu &&
+        creature->IsTrainer();
+}
+
+bool Player::IsCoaOrdinaryTrainingSpell(uint32 spellId) const
+{
+    if (!IsCoaManaged() || !sWorld.GetCoaTrainingSpells().count(spellId))
+    {
+        return false;
+    }
+    auto spell = sSpellStore.LookupEntry(spellId);
+    auto playerClass = sChrClassesStore.LookupEntry(getClass());
+    if (!spell || !playerClass || !coa::OrdinaryClassSpell(playerClass->SpellClassSet, spell->SpellClassSet, spell->SpellLevel))
+    {
+        return false;
+    }
+    auto bounds = sSpellMgr.GetSkillLineAbilityMapBounds(spellId);
+    for (auto it = bounds.first; it != bounds.second; ++it)
+    {
+        auto ability = it->second;
+        auto skill = sSkillLineStore.LookupEntry(ability->SkillLine);
+        if (skill && skill->CategoryID == SKILL_CATEGORY_CLASS && ability->MinSkillLineRank <= 1 &&
+            (!ability->RaceMask || (ability->RaceMask & getRaceMask())) &&
+            (!ability->ClassMask || (ability->ClassMask & getClassMask())) &&
+            !(ability->ExcludeRace & getRaceMask()) && !(ability->ExcludeClass & getClassMask()))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Player::CanTrainCoaOrdinarySpell(uint32 spellId) const
+{
+    if (!IsCoaOrdinaryTrainingSpell(spellId))
+    {
+        return false;
+    }
+    auto spell = sSpellStore.LookupEntry(spellId);
+    uint32 required = spell->SpellLevel;
+    if (!IsSpellFitByClassAndRace(spellId, &required))
+    {
+        return false;
+    }
+    required = std::max(required, spell->SpellLevel);
+    TrainerSpell offer(spellId, 0, 0, 0, required, spellId, true);
+    return getLevel() >= required && GetTrainerSpellState(&offer, required) == TRAINER_SPELL_GREEN;
+}
+
+bool Player::TrainCoaOrdinarySpell(uint32 spellId)
+{
+    if (!m_coaReady || m_coaFailed || !CanTrainCoaOrdinarySpell(spellId) || !CharacterDatabase.BeginTransaction())
+    {
+        return false;
+    }
+    auto bounds = sSpellMgr.GetSkillLineAbilityMapBounds(spellId);
+    for (auto it = bounds.first; it != bounds.second; ++it)
+    {
+        auto ability = it->second;
+        auto skill = sSkillLineStore.LookupEntry(ability->SkillLine);
+        if (skill && skill->CategoryID == SKILL_CATEGORY_CLASS && ability->MinSkillLineRank <= 1 &&
+            (!ability->RaceMask || (ability->RaceMask & getRaceMask())) &&
+            (!ability->ClassMask || (ability->ClassMask & getClassMask())) &&
+            !(ability->ExcludeRace & getRaceMask()) && !(ability->ExcludeClass & getClassMask()) &&
+            GetPureSkillValue(ability->SkillLine) < 1)
+        {
+            SetSkill(ability->SkillLine, 1, 1);
+        }
+    }
+    RememberCoaIndependentSpell(spellId);
+    learnSpell(spellId, false);
+    if (m_coaFailed || !HasSpell(spellId))
+    {
+        CharacterDatabase.RollbackTransaction();
+        m_coaFailed = true;
+        GetSession()->KickPlayer();
+        return false;
+    }
+    _SaveSpells();
+    _SaveSkills();
+    if (!CharacterDatabase.CommitTransactionChecked())
+    {
+        m_coaFailed = true;
+        GetSession()->KickPlayer();
+        return false;
+    }
+    return true;
+}
+
+TrainerSpellData Player::GetCoaTrainerSpells() const
+{
+    TrainerSpellData result;
+    result.trainerType = TRAINER_TYPE_CLASS;
+    if (!m_coaReady || m_coaFailed || !IsCoaManaged())
+    {
+        return result;
+    }
+    // Keep known and future-level services for the native trainer filters.
+    // CA entries are not ordinary training: their AE/TE purchases stay in CA UI.
+    for (auto id : sWorld.GetCoaTrainingSpells())
+    {
+        if (!IsCoaOrdinaryTrainingSpell(id))
+        {
+            continue;
+        }
+        auto spell = sSpellStore.LookupEntry(id);
+        uint32 required = spell->SpellLevel;
+        if (IsSpellFitByClassAndRace(id, &required))
+        {
+            required = std::max(required, spell->SpellLevel);
+            result.spellList.emplace(id, TrainerSpell(id, 0, 0, 0, required, id, true));
+        }
+    }
+    return result;
+}
+
+void WorldSession::HandleCoaReplace(WorldPacket& packet)
+{
+    if (!AcceptCoaRequest())
+    {
         return;
     }
     auto parsed = coa::analytic::ParseEntriesReplacement(packet);
@@ -891,5 +1034,5 @@ void WorldSession::HandleCoaReplace(WorldPacket& packet)
         SendPacket(&result);
         return;
     }
-    player->ApplyCoa(parsed.value.entries);
+    GetPlayer()->ApplyCoa(parsed.value.entries);
 }

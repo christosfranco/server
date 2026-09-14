@@ -339,6 +339,7 @@ class WorldSession
 
         proto::ConnectionProfile GetClientProfile() const { return m_clientProfile; }
         bool CanUseCharacterClass(uint32 playerClass) const;
+        bool AcceptCoaRequest();
         void HandleCoaReplace(WorldPacket& packet);
 
         /**

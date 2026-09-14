@@ -41,6 +41,7 @@ set(SRC_GRP_TESTS
     PrimitiveSafetyTest.cpp
     CoaProtocolTest.cpp
     CoaProgressionTest.cpp
+    DBCStoreTest.cpp
     CoaStarterTest.cpp
     CoaStanceRulesTest.cpp
     CoaCombatRulesTest.cpp

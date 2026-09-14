@@ -12,6 +12,20 @@ file(READ "${SOURCE_ROOT}/src/game/WorldHandlers/AchievementMgr.cpp" achievement
 file(READ "${SOURCE_ROOT}/src/game/Object/Guild.cpp" guild)
 file(READ "${SOURCE_ROOT}/src/game/Object/GuildBank.cpp" bank)
 file(READ "${SOURCE_ROOT}/src/game/Object/InventoryTransaction.h" inventory_transaction)
+file(READ "${SOURCE_ROOT}/src/game/WorldHandlers/NPCHandler.cpp" npc)
+file(READ "${SOURCE_ROOT}/src/game/Object/Creature.cpp" creature)
+if(player MATCHES "SendCoaTrainerMenu|SelectCoaTrainer|[A-Za-z]*TrainingSender" OR
+   NOT player MATCHES "TrainerSpellData Player::GetCoaTrainerSpells" OR
+   NOT npc MATCHES "nativeSpells = _player->GetCoaTrainerSpells" OR
+    NOT npc MATCHES "_player->TrainCoaOrdinarySpell\\(spellId\\)" OR
+   NOT npc MATCHES "SendTrainerList\\(pCreature->GetObjectGuid\\(\\)\\)" OR
+   NOT creature MATCHES "Player::IsCoaTrainer\\(this\\)")
+    message(FATAL_ERROR "Class-aware training must use native trainer list/buy handlers, not gossip or blanket grants")
+endif()
+if(NOT spell MATCHES "coa::TrainingRankKnown\\(sWorld.GetCoaTrainingPreviousSpells\\(\\)" OR
+   NOT player MATCHES "GetTrainerSpellState\\(&offer, required\\) == TRAINER_SPELL_GREEN")
+    message(FATAL_ERROR "Ordinary native training list state and buy validation must enforce checked native rank prerequisites")
+endif()
 if(NOT guild MATCHES "bool Guild::Disband\\(\\)[ \n]*\\{[ \n]*if \\(!CanDisband\\(\\)\\)" OR
    NOT guild MATCHES "GuildBankPersistence::CanCleanup\\(m_bankSaveBlocked, true\\)" OR
    NOT guild MATCHES "GuildBankPersistence::DeleteItems\\(m_TabListMap, m_bankSaveBlocked, alsoInDB\\)" OR
@@ -84,10 +98,12 @@ if(NOT spell MATCHES "talentPos = IsCoaManagedSpell\\(spell_id\\) \\? nullptr : 
    NOT spell MATCHES "if \\(nativeTalentPos && IsSpellHaveEffect")
     message(FATAL_ERROR "CoA Talent.dbc overlap needs ownership-based bookkeeping exclusion AND native trigger mechanics")
 endif()
-if(NOT load MATCHES "if \\(IsCoaManagedSpell\\(spell_id\\)\\)" OR
+if(NOT load MATCHES "ordinaryTraining = IsCoaOrdinaryTrainingSpell\\(spell_id\\)" OR
+   NOT load MATCHES "if \\(IsCoaManagedSpell\\(spell_id\\) && !ordinaryTraining\\)" OR
    load MATCHES "DELETE FROM `character_spell` WHERE `spell`" OR
-   NOT save MATCHES "if \\(IsCoaManagedSpell\\(itr->first\\)\\)")
-    message(FATAL_ERROR "CA projection must not load/save as stock spells or globally delete another player's rows")
+    NOT save MATCHES "ordinaryTraining = m_coaIndependentRoots.count\\(itr->first\\) && IsCoaOrdinaryTrainingSpell\\(itr->first\\)" OR
+   NOT save MATCHES "if \\(IsCoaManagedSpell\\(itr->first\\) && !ordinaryTraining\\)")
+    message(FATAL_ERROR "CA projection must remain separate from validated ordinary training and never delete another player's rows")
 endif()
 if(NOT lifecycle MATCHES "SendItemDurations\\(\\);[^;]*SendCoaSnapshot\\(\\);" OR
    NOT player MATCHES "m_coaFailed \\|\\| !IsInWorld\\(\\)" OR

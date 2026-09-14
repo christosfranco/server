@@ -220,7 +220,7 @@ class DBCStorage
         T** indexTable; /**< TODO */
         T* m_dataTable; /**< TODO */
         std::map<uint32, T const*> data;
-        bool loaded;
+        bool loaded = false;
         StringPoolList m_stringPoolList; /**< TODO */
 };
 
