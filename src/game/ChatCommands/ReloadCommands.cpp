@@ -34,6 +34,7 @@
  * - Quest and NPC data reloads
  */
 
+#include "AscFixture.h"
 #include "Common/ServerDefines.h"
 #include "Chat.h"
 #include "Language.h"
@@ -80,6 +81,27 @@ bool ChatHandler::HandleReloadAllSpellCommand(char* /*args*/)
  * @param args Command arguments.
  * @returns True if the command executed successfully, false otherwise.
  */
+/**
+ * PLAN 23.6. Re-arm the tester fixtures (AscFixture) and write their `boot`
+ * lines. This is the core successor of `.reload eluna`, which was Eluna's own
+ * OnCommand hook and disappears with `-DSCRIPT_LIB_ELUNA=OFF`: the fixtures a
+ * gate re-armed with it are C++ now, so the operator asks the core instead.
+ * Re-reads the `Ascension.Fixture.*.Path` keys, so a path edited in
+ * mangosd.conf takes effect without a restart, exactly as reloading the
+ * script did.
+ */
+bool ChatHandler::HandleReloadFixturesCommand(char* /*args*/)
+{
+    AscFixture::Init();
+    if (!AscFixture::Enabled())
+    {
+        SendSysMessage("Ascension fixtures: none configured (Ascension.Fixture.*.Path).");
+        return true;
+    }
+    SendSysMessage("Ascension fixtures re-armed; boot line written to each configured file.");
+    return true;
+}
+
 bool ChatHandler::HandleReloadAllCommand(char* /*args*/)
 {
     HandleReloadSkillFishingBaseLevelCommand((char*)"");

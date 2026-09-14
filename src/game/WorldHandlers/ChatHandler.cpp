@@ -38,6 +38,7 @@
  * and filtered by language, distance, and other rules.
  */
 
+#include "AscFixture.h"
 #include "Common/ServerDefines.h"
 #include "Platform/Define.h"
 #include <cstring>
@@ -245,6 +246,14 @@ void WorldSession::HandleMessagechatOpcode(WorldPacket& recv_data)
 
             if (type == CHAT_MSG_SAY)
             {
+                // PLAN 23.6: the tester fixtures (rp/ip/dp) are core code now,
+                // not Eluna scripts. A handled line is swallowed, exactly as
+                // the Eluna handler's `false` return did, so a fixture command
+                // is never broadcast to the world.
+                if (AscFixture::Handle(GetPlayer(), msg))
+                {
+                    return;
+                }
 #ifdef ENABLE_ELUNA
                 if (Eluna* e = sWorld.GetEluna())
                 {

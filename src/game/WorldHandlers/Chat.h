@@ -452,6 +452,7 @@ class ChatHandler
         bool HandleQuestCompleteCommand(char* args);
 
         bool HandleReloadAllCommand(char* args);
+        bool HandleReloadFixturesCommand(char* args);
         bool HandleReloadAllAchievementCommand(char* args);
         bool HandleReloadAllAreaCommand(char* args);
         bool HandleReloadAllGossipsCommand(char* args);

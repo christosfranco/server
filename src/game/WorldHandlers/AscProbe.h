@@ -16,7 +16,7 @@
 #ifndef MANGOS_H_ASC_PROBE
 #define MANGOS_H_ASC_PROBE
 
-#include "Common.h"
+#include "Platform/Define.h"
 
 class Creature;
 class GameObject;

@@ -555,6 +555,7 @@ ChatCommand* ChatHandler::getCommandTable()
     static ChatCommand reloadCommandTable[] =
     {
         { "all",            SEC_ADMINISTRATOR,  true,  &ChatHandler::HandleReloadAllCommand,           "", NULL },
+        { "fixtures",       SEC_ADMINISTRATOR,  true,  &ChatHandler::HandleReloadFixturesCommand,      "", NULL },
         { "all_achievement", SEC_ADMINISTRATOR,  true,  &ChatHandler::HandleReloadAllAchievementCommand, "", NULL },
         { "all_area",       SEC_ADMINISTRATOR,  true,  &ChatHandler::HandleReloadAllAreaCommand,       "", NULL },
         { "all_eventai",    SEC_ADMINISTRATOR,  true,  &ChatHandler::HandleReloadAllEventAICommand,    "", NULL },
