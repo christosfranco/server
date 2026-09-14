@@ -126,6 +126,28 @@ TEST(Coa_starter_dual_wield_shield_ammo_and_proficiency_are_real_requirements)
     }
 }
 
+TEST(Coa_starter_felsworn_falls_back_to_policy_674_when_no_native_370094_row)
+{
+    // This realm's DBC snapshot (patch-D, 2026-09-03) has no SkillLineAbility
+    // row for 370094; the loader maps stock 674 to the level-1 floor
+    // (SpellLevel 20 -> level 1, MinSkillLineRank 1 -> 0). Class 14 must still
+    // plan a dual-wield starter, as a POLICY grant, and Native wins when both
+    // rows exist (the test above).
+    auto prof = Proficiencies(); prof.pop_back();
+    for (auto& p : prof) { if (p.spell == 674) { p.level = 1; p.minimumSkill = 0; } }
+    auto felsworn = coa::PlanStarter(contexts[2], 14, 1, Items(), prof);
+    CHECK(felsworn.proficiencies.count(674));
+    CHECK(felsworn.policyProficiencies.count(674));
+    CHECK(felsworn.skills.count(118));
+    CHECK(!felsworn.proficiencies.count(370094));
+    auto both = Proficiencies();
+    for (auto& p : both) { if (p.spell == 674) { p.level = 1; p.minimumSkill = 0; } }
+    auto preferred = coa::PlanStarter(contexts[2], 14, 1, Items(), both);
+    CHECK(preferred.proficiencies.count(370094));
+    CHECK(!preferred.proficiencies.count(674));
+    CHECK(!preferred.policyProficiencies.count(674));   // 1180 stays a policy grant either way
+}
+
 TEST(Coa_starter_missing_incompatible_or_restricted_sources_fail_closed)
 {
     auto prof = Proficiencies(); prof.pop_back();

@@ -118,8 +118,20 @@ namespace coa
         plan.dualWield = spell.offHand;
         if (plan.dualWield)
         {
+            // A NATIVE dual-wield row first (the level-zero 370094 where the
+            // realm's SkillLineAbility.dbc carries it, docs/coa-advancement.md),
+            // and only then a policy grant: the Sep-3 patch-D snapshot this
+            // realm is staged from has no 370094 row at all, so class 14 keeps
+            // the 674 exception below (22.4c/23.2) until the DBC set is
+            // re-staged from an install that has one. Preferring Native means
+            // the two never compete on a DBC that carries both.
             auto dw = std::find_if(proficiencies.begin(), proficiencies.end(), [&](StarterProficiency const& p)
-                { return p.dualWield && StarterProficiencyAccess(p, playerClass, race) != ProficiencyAccess::Denied; });
+                { return p.dualWield && StarterProficiencyAccess(p, playerClass, race) == ProficiencyAccess::Native; });
+            if (dw == proficiencies.end())
+            {
+                dw = std::find_if(proficiencies.begin(), proficiencies.end(), [&](StarterProficiency const& p)
+                    { return p.dualWield && StarterProficiencyAccess(p, playerClass, race) == ProficiencyAccess::Policy; });
+            }
             if (dw == proficiencies.end())
             {
                 throw std::invalid_argument("CoA starter requires native dual-wield proficiency");
@@ -234,6 +246,15 @@ namespace coa
         if (!p.dualWield && p.spell == 266 && p.skill == 46 && p.itemClass == 2 && p.subclasses == 8)
         {
             exception = playerClass == 28;
+        }
+        // Felsworn dual wield (22.4c/23.2). main 833f88a dropped this in favour
+        // of the native level-zero 370094 row; this realm's DBC snapshot has
+        // none, and PlanStarter prefers a Native row when one exists, so the
+        // grant is reached only where 370094 is absent. Stock 674 is SpellLevel
+        // 20 in September's layer; the loader maps the level-1 floor.
+        if (p.dualWield && p.spell == 674 && p.skill == 118 && p.itemClass == -1 && p.subclasses == 0)
+        {
+            exception = playerClass == 14;
         }
         bool nativeClass = !p.classes || (p.classes & cls);
         for (auto const& access : p.associations)
