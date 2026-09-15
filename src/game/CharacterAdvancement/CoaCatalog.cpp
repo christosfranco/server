@@ -279,7 +279,8 @@ namespace coa
             auto const& marker = catalog->m_entries.at(spec.marker);
             auto const& root = catalog->m_entries.at(spec.root);
             Require(marker.playerClass == spec.playerClass && root.playerClass == spec.playerClass &&
-                marker.owners == std::set<uint32_t>{pair.first} && root.owners.count(pair.first) &&
+                marker.owners == std::set<uint32_t>{pair.first} &&
+                (root.owners.empty() || root.owners.count(pair.first)) &&
                 marker.maxRank == 1 && root.maxRank == 1 && !marker.ae && !marker.te &&
                 root.ae == 1 && !root.te, "CoA invalid spec package");
         }

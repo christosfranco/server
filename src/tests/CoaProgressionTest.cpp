@@ -159,6 +159,38 @@ TEST(Coa_free_trait_closure_prerequisite_investment_and_shared_root)
     CHECK(!c->Authorize(12, 10, 2, {}).entries.count(105));
 }
 
+TEST(Coa_shared_spec_roots_load_and_authorize_across_specs)
+{
+    // 23.13 (owner decision 2026-09-15): Class-tab spec roots are
+    // class-shared, so a root with empty owners is a valid spec package;
+    // a root owned only by another spec still is not.
+    auto text = Fixture(
+        "ENTRY\t120\t12\t1\t0\t10\t1\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\n"
+        "SPELL\t120\t1\t11200\t1\t10\n");
+    auto repoint = std::string("SPEC\t2\t12\t102\t101\n");
+    auto at = text.find(repoint);
+    REQUIRE(at != std::string::npos);
+    text.replace(at, repoint.size(), "SPEC\t2\t12\t102\t120\n");
+    for (auto row : {std::string("OWNER\t101\t1\n"), std::string("OWNER\t101\t2\n")})
+    {
+        at = text.find(row);
+        REQUIRE(at != std::string::npos);
+        text.erase(at, row.size());
+    }
+    auto c = coa::Catalog::Parse(text, Hash(text));
+    auto b = c->Authorize(12, 10, 1, {{100, 1}});
+    CHECK(b.entries.count(100)); CHECK(b.entries.count(101));
+    auto shared = c->Authorize(12, 12, 1, {{100, 1}, {120, 1}});
+    CHECK(shared.entries.count(101)); CHECK(shared.entries.count(120));
+    CHECK(c->Authorize(12, 10, 2, {}).entries.count(120));
+    auto foreign = Fixture();
+    auto owned = std::string("OWNER\t101\t1\n");
+    at = foreign.find(owned);
+    REQUIRE(at != std::string::npos);
+    foreign.erase(at, owned.size());
+    CHECK(Rejected([&] { coa::Catalog::Parse(foreign, Hash(foreign)); }));
+}
+
 TEST(Coa_mutual_exclusion_group_and_explicit_start)
 {
     auto c = Catalog("EXCLUDE\t106\t110\n");
