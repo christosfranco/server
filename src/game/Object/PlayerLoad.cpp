@@ -815,6 +815,13 @@ bool Player::LoadFromDB(ObjectGuid guid, SqlQueryHolder* holder)
     _LoadInventory(holder->GetResult(PLAYER_LOGIN_QUERY_LOADINVENTORY), time_diff);
     _LoadItemLoot(holder->GetResult(PLAYER_LOGIN_QUERY_LOADITEMLOOT));
 
+    // 24.2: recover missing starter chest/legs for CoA-managed characters that
+    // were created before the planner filled those roles. Runs strictly after
+    // _LoadInventory so occupied slots are visible and GetItemCount() sees the
+    // character's real holdings; a duplicate copy or a player-chosen slot is
+    // never overwritten.
+    RepairCoaStarterArmor();
+
     // update items with duration and realtime
     UpdateItemDuration(time_diff, true);
 

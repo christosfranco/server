@@ -2418,6 +2418,11 @@ class Player : public Unit
         bool PrepareCoaStarterInfrastructure();
         bool EquipCoaStarter();
         bool CheckCoaStarterReady();
+        // 24.2: fills empty starter chest/legs slots on login without touching
+        // occupied slots or duplicating owned items. Always returns true today
+        // (best-effort; failures log and continue) but the return value is
+        // reserved for future hard-failure paths.
+        bool RepairCoaStarterArmor();
         uint32 GetProgressionLevelCap() const;
         bool IsCoaManagedSpell(uint32 spell) const;
         bool IsCoaDefaultSpell(uint32 spell) const;

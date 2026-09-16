@@ -92,6 +92,14 @@ namespace coa
                         (item.inventoryType == 15 || item.inventoryType == 26);
                 case StarterSlot::Ammo:
                     return item.itemClass == 6 && item.inventoryType == 24;
+                case StarterSlot::Chest:
+                    // Cloth/Leather/Mail/Plate body armour. INVTYPE_CHEST=5 and
+                    // INVTYPE_ROBE=20 both equip to EQUIPMENT_SLOT_CHEST.
+                    return item.itemClass == 4 && item.subclass >= 1 && item.subclass <= 4 &&
+                        (item.inventoryType == 5 || item.inventoryType == 20);
+                case StarterSlot::Legs:
+                    return item.itemClass == 4 && item.subclass >= 1 && item.subclass <= 4 &&
+                        item.inventoryType == 7;
             }
             return false;
         }
@@ -153,11 +161,14 @@ namespace coa
             bool needed = role == StarterSlot::MainHand ? spell.mainHand || plan.dualWield ||
                     (spell.equipmentClass == 2 && !spell.ranged)
                 : role == StarterSlot::OffHand ? plan.dualWield || spell.equipmentClass == 4
-                : spell.ranged;
+                : role == StarterSlot::Ranged ? spell.ranged
+                : role == StarterSlot::Ammo ? spell.ranged
+                : role == StarterSlot::Chest || role == StarterSlot::Legs;    // 24.2: always try
             if (!needed)
             {
                 continue;
             }
+            bool armour = role == StarterSlot::Chest || role == StarterSlot::Legs;
             bool found = false;
             for (auto const& item : items)
             {
@@ -175,19 +186,42 @@ namespace coa
                         continue;
                     }
                 }
-                else if (!Fits(spell, item) || !item.skill)
+                else if (!armour && (!Fits(spell, item) || !item.skill))
                 {
+                    // Weapons must satisfy the starter spell's EquippedItemClass/
+                    // Subclass/InventoryTypes mask and carry a skill row so the
+                    // proficiency association below has something to key on.
+                    // Armour body slots are independent of the spell's weapon
+                    // mask; they only need a class-armour proficiency.
                     continue;
                 }
-                auto proficiency = std::find_if(proficiencies.begin(), proficiencies.end(), [&](StarterProficiency const& p)
+                auto proficiency = proficiencies.end();
+                if (role != StarterSlot::Ammo)
                 {
-                    return !p.dualWield && p.spell && p.skill == item.skill && p.itemClass == int32_t(item.itemClass) &&
-                        item.subclass < 32 && (p.subclasses & (uint32_t(1) << item.subclass)) &&
-                        StarterProficiencyAccess(p, playerClass, race) != ProficiencyAccess::Denied;
-                });
-                if (role != StarterSlot::Ammo && proficiency == proficiencies.end())
-                {
-                    continue;
+                    // Armour proficiencies key on the item's Class/Subclass. The
+                    // starter grants Native proficiencies only for body-armour
+                    // slots so a bare-bones cloth chest never depends on a
+                    // policy grant. Weapons keep the pre-24.2 rule: any Native
+                    // or Policy proficiency the class can access.
+                    proficiency = std::find_if(proficiencies.begin(), proficiencies.end(), [&](StarterProficiency const& p)
+                    {
+                        if (p.dualWield || !p.spell || p.itemClass != int32_t(item.itemClass) ||
+                            item.subclass >= 32 || !(p.subclasses & (uint32_t(1) << item.subclass)))
+                        {
+                            return false;
+                        }
+                        if (!armour && p.skill != item.skill)
+                        {
+                            return false;
+                        }
+                        auto access = StarterProficiencyAccess(p, playerClass, race);
+                        return armour ? access == ProficiencyAccess::Native
+                                      : access != ProficiencyAccess::Denied;
+                    });
+                    if (proficiency == proficiencies.end())
+                    {
+                        continue;
+                    }
                 }
                 plan.gear[slot] = item;
                 if (role != StarterSlot::Ammo)
@@ -197,14 +231,26 @@ namespace coa
                     {
                         plan.policyProficiencies.insert(proficiency->spell);
                     }
-                    plan.skills.insert(item.skill);
+                    if (proficiency->skill)
+                    {
+                        plan.skills.insert(proficiency->skill);
+                    }
                 }
                 found = true;
                 break;
             }
             if (!found)
             {
-                throw std::invalid_argument("CoA starter missing compatible gear/proficiency for role " + std::to_string(slot));
+                // Weapon roles remain hard requirements: no runnable class fits
+                // the starter spell without them. Body armour is best-effort at
+                // plan time -- if the DBC snapshot has no shared cloth chest a
+                // class can wear, the character still boots and the login-time
+                // repair retries when a compatible item is added to the data
+                // set. 24.2 keeps that door open rather than refusing creation.
+                if (!armour)
+                {
+                    throw std::invalid_argument("CoA starter missing compatible gear/proficiency for role " + std::to_string(slot));
+                }
             }
         }
         return plan;
@@ -275,7 +321,7 @@ namespace coa
         }
         return ProficiencyAccess::Denied;
     }
-    bool StarterReady(StarterPlan const& plan, std::array<StarterItem, 4> const& equipped,
+    bool StarterReady(StarterPlan const& plan, std::array<StarterItem, 6> const& equipped,
         std::set<uint32_t> const& skills, uint32_t weaponProficiency, uint32_t armorProficiency,
         bool dualWield, bool knowsSpell, uint32_t baseMana, uint32_t baseHealth,
         uint32_t currentPower, uint32_t ammoCount)
@@ -298,13 +344,28 @@ namespace coa
                 continue;
             }
             auto const& item = equipped[slot];
-            if (!FitsSlot(item, StarterSlot(slot), plan.dualWield))
+            auto role = StarterSlot(slot);
+            if (!FitsSlot(item, role, plan.dualWield))
             {
                 return false;
             }
-            if (slot == 3)
+            if (role == StarterSlot::Ammo)
             {
                 if (!ammoCount || item.subclass != (equipped[2].subclass == 3 ? 3u : 2u))
+                {
+                    return false;
+                }
+            }
+            else if (role == StarterSlot::Chest || role == StarterSlot::Legs)
+            {
+                // Armour proficiency is the sole runtime gate for body slots;
+                // the starter spell's weapon mask does not apply. A skill row is
+                // preferred but not universal for level-1 cloth on this DBC.
+                if (!(armorProficiency & (uint32_t(1) << item.subclass)))
+                {
+                    return false;
+                }
+                if (plan.gear[slot].skill && !skills.count(item.skill))
                 {
                     return false;
                 }

@@ -17,8 +17,13 @@ namespace coa
         uint32_t subclasses = 0, inventoryTypes = 0;
         bool mainHand = false, offHand = false, ranged = false;
     };
-    // Main hand, off hand, ranged weapon, ammunition. These are not client slots.
-    enum class StarterSlot : uint8_t { MainHand, OffHand, Ranged, Ammo };
+    // Main hand, off hand, ranged weapon, ammunition, chest and legs. These
+    // are not client slots; EquipCoaStarter maps the weapon roles to the
+    // MAINHAND/OFFHAND/RANGED equipment slots, the ammunition role to the
+    // ammo field, and the two armour roles to EQUIPMENT_SLOT_CHEST/LEGS.
+    // Character-foundations 24.2: chest and legs are now part of the plan so
+    // every CoA race/class pair boots with body armour, not only weaponry.
+    enum class StarterSlot : uint8_t { MainHand, OffHand, Ranged, Ammo, Chest, Legs };
     struct StarterItem
     {
         uint32_t id = 0, itemClass = 0, subclass = 0, inventoryType = 0, skill = 0;
@@ -45,7 +50,10 @@ namespace coa
     struct StarterPlan
     {
         StarterSpell spell;
-        std::array<StarterItem, 4> gear{};
+        // Six roles: MainHand, OffHand, Ranged, Ammo, Chest, Legs. Weapon roles
+        // are populated by the same rules as before; the two armour roles are
+        // added by 24.2 and are always attempted for every supported CoA class.
+        std::array<StarterItem, 6> gear{};
         std::set<uint32_t> proficiencies, skills;
         std::set<uint32_t> policyProficiencies;
         std::set<uint32_t> nativeProficiencies;
@@ -68,7 +76,11 @@ namespace coa
     // capture). Empty for classes without a native book (stock, Hero 10).
     std::set<uint32_t> StarterSpells(uint32_t playerClass);
     // Same equipment/resource postcondition used by real Player creation and tests.
-    bool StarterReady(StarterPlan const& plan, std::array<StarterItem, 4> const& equipped,
+    // Chest and legs slots are optional in the plan (id == 0 means no starter
+    // armour for that role); when a plan asks for either, StarterReady checks
+    // the corresponding equipped slot with the armour-proficiency mask, exactly
+    // as it already does for weapon slots.
+    bool StarterReady(StarterPlan const& plan, std::array<StarterItem, 6> const& equipped,
         std::set<uint32_t> const& skills, uint32_t weaponProficiency, uint32_t armorProficiency,
         bool dualWield, bool knowsSpell, uint32_t baseMana, uint32_t baseHealth,
         uint32_t currentPower, uint32_t ammoCount);

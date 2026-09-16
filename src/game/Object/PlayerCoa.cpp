@@ -271,20 +271,29 @@ bool Player::EquipCoaStarter()
     {
         return false;
     }
-    uint8 const slots[] = {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, EQUIPMENT_SLOT_RANGED};
-    for (size_t i = 0; i < 3; ++i)
+    // Weapon/armour roles map to equipment slots one-to-one. The array is in
+    // coa::StarterSlot order (MainHand=0, OffHand=1, Ranged=2, Ammo=3,
+    // Chest=4, Legs=5); ammo is handled below because it is not equipped.
+    struct { size_t role; uint8 destination; } const equip[] = {
+        {0, EQUIPMENT_SLOT_MAINHAND},
+        {1, EQUIPMENT_SLOT_OFFHAND},
+        {2, EQUIPMENT_SLOT_RANGED},
+        {4, EQUIPMENT_SLOT_CHEST},
+        {5, EQUIPMENT_SLOT_LEGS},
+    };
+    for (auto const& pair : equip)
     {
-        auto const& item = plan->gear[i];
+        auto const& item = plan->gear[pair.role];
         if (!item.id)
         {
             continue;
         }
         uint16 destination = 0;
-        auto error = CanEquipNewItem(slots[i], destination, item.id, false);
+        auto error = CanEquipNewItem(pair.destination, destination, item.id, false);
         if (error != EQUIP_ERR_OK || !EquipNewItem(destination, item.id, true))
         {
             sLog.outError("CoA starter equipment %u role %zu failed for class %u: %u",
-                item.id, i, uint32(getClass()), uint32(error));
+                item.id, pair.role, uint32(getClass()), uint32(error));
             return false;
         }
     }
@@ -300,6 +309,69 @@ bool Player::EquipCoaStarter()
     }
     // The supplied offensive ability is discoverable without donor action bars.
     addActionButton(0, 0, plan->spell.id, ACTION_BUTTON_SPELL);
+    return true;
+}
+
+// 24.2: safe login-time repair. When a CoA-managed character logs in and the
+// starter chest or legs slot is empty, grant the planner's chosen item -- but
+// only if the character does not already own a copy anywhere (bags, bank,
+// equipment or currently-equipped-elsewhere). "Not replacing player-chosen
+// equipment" is enforced by GetItemByPos returning null for the destination
+// slot; "not duplicating" is enforced by the item-count check across all
+// containers. Weapon and ammo slots are deliberately excluded: their absence
+// is a player choice (unequipping, banking, disenchant) rather than a shipped
+// gap in the character.
+bool Player::RepairCoaStarterArmor()
+{
+    if (!IsCoaManaged())
+    {
+        return true;
+    }
+    auto plan = GetCoaStarter();
+    if (!plan)
+    {
+        return false;
+    }
+    struct { size_t role; uint8 destination; char const* label; } const armour[] = {
+        {4, EQUIPMENT_SLOT_CHEST, "chest"},
+        {5, EQUIPMENT_SLOT_LEGS,  "legs"},
+    };
+    for (auto const& pair : armour)
+    {
+        auto const& item = plan->gear[pair.role];
+        if (!item.id)
+        {
+            continue;   // Plan carries no starter for this slot on this pair.
+        }
+        if (GetItemByPos(INVENTORY_SLOT_BAG_0, pair.destination))
+        {
+            continue;   // Slot occupied -- never replace player-chosen gear.
+        }
+        // GetItemCount(entry, /*inBankAlso*/ true) returns every copy in bags,
+        // equipment (other slots) and the bank. A single starter row lives
+        // exactly once, so a positive count means the character already got it
+        // and moved it elsewhere; do not add another one.
+        if (GetItemCount(item.id, true) > 0)
+        {
+            continue;
+        }
+        uint16 destination = 0;
+        auto error = CanEquipNewItem(pair.destination, destination, item.id, false);
+        if (error != EQUIP_ERR_OK)
+        {
+            sLog.outDetail("CoA starter %s repair skipped for guid %u class %u: cannot equip item %u (%u)",
+                pair.label, GetGUIDLow(), uint32(getClass()), item.id, uint32(error));
+            continue;
+        }
+        if (!EquipNewItem(destination, item.id, true))
+        {
+            sLog.outError("CoA starter %s repair failed for guid %u class %u: EquipNewItem returned false for item %u",
+                pair.label, GetGUIDLow(), uint32(getClass()), item.id);
+            continue;
+        }
+        sLog.outString("CoA starter %s repaired for guid %u class %u: granted item %u",
+            pair.label, GetGUIDLow(), uint32(getClass()), item.id);
+    }
     return true;
 }
 
@@ -319,24 +391,28 @@ bool Player::CheckCoaStarterReady()
     {
         return false;
     }
-    std::array<coa::StarterItem, 4> equipped{};
+    std::array<coa::StarterItem, 6> equipped{};
     std::set<uint32> skills;
-    uint8 const slots[] = {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, EQUIPMENT_SLOT_RANGED};
-    for (size_t i = 0; i < 4; ++i)
+    // Roles: MainHand, OffHand, Ranged, Ammo, Chest, Legs. Ammo (i==3) is a
+    // PLAYER_AMMO_ID field, not an equipment slot; the two armour slots come
+    // from the ordinary bag-0 equipment layout.
+    uint8 const slots[6] = {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND, EQUIPMENT_SLOT_RANGED,
+        0, EQUIPMENT_SLOT_CHEST, EQUIPMENT_SLOT_LEGS};
+    for (size_t i = 0; i < equipped.size(); ++i)
     {
-        auto item = i < 3 ? GetItemByPos(INVENTORY_SLOT_BAG_0, slots[i]) : nullptr;
-        auto proto = i < 3 ? (item ? item->GetProto() : nullptr)
-            : ObjectMgr::GetItemPrototype(GetUInt32Value(PLAYER_AMMO_ID));
+        auto item = i == 3 ? nullptr : GetItemByPos(INVENTORY_SLOT_BAG_0, slots[i]);
+        auto proto = i == 3 ? ObjectMgr::GetItemPrototype(GetUInt32Value(PLAYER_AMMO_ID))
+                            : (item ? item->GetProto() : nullptr);
         if (!proto)
         {
             continue;
         }
-        if (i < 3 && (item->IsBroken() || CanUseItem(item, false) != EQUIP_ERR_OK))
+        if (i != 3 && (item->IsBroken() || CanUseItem(item, false) != EQUIP_ERR_OK))
         {
             return false;
         }
         equipped[i] = {proto->ItemId, proto->Class, proto->SubClass, proto->InventoryType, Item::GetSkill(proto)};
-        if (HasSkill(equipped[i].skill))
+        if (equipped[i].skill && HasSkill(equipped[i].skill))
         {
             skills.insert(equipped[i].skill);
         }
