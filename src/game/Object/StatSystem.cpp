@@ -339,13 +339,21 @@ void Player::UpdateAttackPowerAndDamage(bool ranged)
     uint16 index_mod = UNIT_FIELD_ATTACK_POWER_MODS;
     uint16 index_mult = UNIT_FIELD_ATTACK_POWER_MULTIPLIER;
 
+    // 24.4: a CoA class (12..32) is not a case here, so val2 was 0.0f and
+    // its AGI/STR did not scale AP at all. Route it through its combat
+    // donor -- the same table PlayerItemQuery uses for relic slots and the
+    // same one make-classes.py clones player_levelstats from -- so the
+    // formula matches the stat curve the class was cloned onto. No effect
+    // for stock classes 1..11 (CoaCombatDonor returns pClass unchanged).
+    uint8 archetype = CoaCombatDonor(getClass());
+
     if (ranged)
     {
         index = UNIT_FIELD_RANGED_ATTACK_POWER;
         index_mod = UNIT_FIELD_RANGED_ATTACK_POWER_MODS;
         index_mult = UNIT_FIELD_RANGED_ATTACK_POWER_MULTIPLIER;
 
-        switch (getClass())
+        switch (archetype)
         {
             case CLASS_HUNTER: val2 = level * 2.0f + GetStat(STAT_AGILITY) - 10.0f;    break;
             case CLASS_ROGUE:  val2 = level        + GetStat(STAT_AGILITY) - 10.0f;    break;
@@ -366,7 +374,7 @@ void Player::UpdateAttackPowerAndDamage(bool ranged)
     }
     else
     {
-        switch (getClass())
+        switch (archetype)
         {
             case CLASS_WARRIOR:      val2 = level * 3.0f + GetStat(STAT_STRENGTH) * 2.0f                    - 20.0f; break;
             case CLASS_PALADIN:      val2 = level * 3.0f + GetStat(STAT_STRENGTH) * 2.0f                    - 20.0f; break;

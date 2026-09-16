@@ -33,51 +33,14 @@
 
 namespace
 {
-    // Ascension's added classes (12..32) are CLONED from a stock donor per
-    // tools/make-classes.py's `ideal_donor()`: rage -> warrior, focus ->
-    // hunter, energy -> rogue (plate: warrior), runic -> death knight,
-    // else by armour proficiency (plate -> paladin, mail -> shaman, leather
-    // -> druid, mana default -> priest). The donor determines a class's
-    // stat curve and, on this realm, which relic-carrying stock class it
-    // inherits an equip slot from: a Sun Cleric's donor is Shaman, so its
-    // relic slot follows Totem's rule. Rows here are (Ascension class id ->
-    // donor stock class id), snapshotted from
-    // sql/ascension-classes-generated.sql; classes whose donor carries no
-    // relic (Priest, Warrior, Rogue, Hunter, Mage) are still listed for the
-    // reader -- they simply don't match any relic-subclass owner below.
-    struct RelicDonor { uint8 klass; uint8 donor; };
-    constexpr RelicDonor kAscensionRelicDonors[] =
-    {
-        { 10, CLASS_PRIEST       },  // Hero
-        { 12, CLASS_ROGUE        },  // Barbarian
-        { 13, CLASS_PRIEST       },  // Witch Doctor
-        { 14, CLASS_ROGUE        },  // Felsworn
-        { 15, CLASS_PRIEST       },  // Witch Hunter
-        { 16, CLASS_PRIEST       },  // Stormbringer
-        { 17, CLASS_WARRIOR      },  // Knight of Xoroth
-        { 18, CLASS_WARRIOR      },  // Guardian
-        { 19, CLASS_ROGUE        },  // Templar
-        { 20, CLASS_WARRIOR      },  // Bloodmage
-        { 21, CLASS_HUNTER       },  // Ranger
-        { 22, CLASS_PRIEST       },  // Chronomancer
-        { 23, CLASS_DEATH_KNIGHT },  // Necromancer
-        { 24, CLASS_PRIEST       },  // Pyromancer
-        { 25, CLASS_PALADIN      },  // Cultist
-        { 26, CLASS_ROGUE        },  // Starcaller
-        { 27, CLASS_SHAMAN       },  // Sun Cleric
-        { 28, CLASS_SHAMAN       },  // Tinker
-        { 29, CLASS_PRIEST       },  // Venomancer
-        { 30, CLASS_DEATH_KNIGHT },  // Reaper
-        { 31, CLASS_SHAMAN       },  // Primalist
-        { 32, CLASS_PRIEST       },  // Runemaster
-    };
-
     // The stock class each armor-relic subclass was authored for. Stock
     // 3.3.5a hardcoded these five in FindEquipSlot below; an Ascension class
-    // whose donor equals the owner inherits the same equip slot -- otherwise
-    // the added classes have no relic slot at all (finding: no creatable
-    // class on this realm could equip ANY relic before this change, PLAN
-    // 22.7b).
+    // whose donor (Player::CoaCombatDonor) equals the owner inherits the
+    // same equip slot -- otherwise the added classes have no relic slot at
+    // all (finding: no creatable class on this realm could equip ANY relic
+    // before this change, PLAN 22.7b). The donor table itself moved to
+    // Player::CoaCombatDonor so StatSystem's AP formula (24.4) uses the same
+    // one authority.
     bool RelicSubClassMatchesClass(uint32 subClass, uint8 pClass)
     {
         uint8 owner = 0;
@@ -92,12 +55,7 @@ namespace
         }
         if (pClass == owner)
             return true;
-        for (auto const& e : kAscensionRelicDonors)
-        {
-            if (e.klass == pClass)
-                return e.donor == owner;
-        }
-        return false;
+        return Player::CoaCombatDonor(pClass) == owner;
     }
 }
 

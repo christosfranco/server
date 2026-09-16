@@ -2396,6 +2396,17 @@ class Player : public Unit
         void LearnClassLevelSpells();
         bool IsCoaManaged() const;
         coa::StarterPlan const* GetCoaStarter() const;
+        // CoA classes 12..32 clone a stock donor per tools/make-classes.py's
+        // ideal_donor(): rage->warrior, focus->hunter, energy->rogue (plate:
+        // warrior), runic->death knight, mana+plate->paladin, mana+mail->shaman,
+        // mana+leather->druid, mana default->priest. StatSystem's melee/ranged
+        // AP formula switches on getClass() and stock 3.3.5a hardcoded the ten
+        // stock ids -- a CoA class read val2 = 0.0f and its STR/AGI did not
+        // scale physical damage at all (24.4 finding). This is the same donor
+        // table PlayerItemQuery.cpp already uses for relic slots, kept in one
+        // place so any future formula that needs a combat archetype for a CoA
+        // class has one authority. Returns pClass itself for stock ids 1..11.
+        static uint8 CoaCombatDonor(uint8 pClass);
         uint32 GetCoaBaseMana(uint32 nativeMana) const;
         uint32 GetCoaCreatePower(Powers power) const;
         void RefreshCoaPowerRequirements();

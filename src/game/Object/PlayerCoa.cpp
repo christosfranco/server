@@ -60,6 +60,40 @@ namespace
     }
 }
 
+uint8 Player::CoaCombatDonor(uint8 pClass)
+{
+    // Snapshotted from sql/ascension-classes-generated.sql, which the
+    // Python generator writes from ideal_donor(). One place, so a stat
+    // formula and PlayerItemQuery's relic slot see the same donor. Stock
+    // classes 1..11 return themselves.
+    switch (pClass)
+    {
+        case 10: return CLASS_PRIEST;        // Hero
+        case 12: return CLASS_ROGUE;         // Barbarian (energy)
+        case 13: return CLASS_PRIEST;        // Witch Doctor
+        case 14: return CLASS_ROGUE;         // Felsworn (energy)
+        case 15: return CLASS_PRIEST;        // Witch Hunter
+        case 16: return CLASS_PRIEST;        // Stormbringer
+        case 17: return CLASS_WARRIOR;       // Knight of Xoroth (rage)
+        case 18: return CLASS_WARRIOR;       // Guardian (rage)
+        case 19: return CLASS_ROGUE;         // Templar (energy)
+        case 20: return CLASS_WARRIOR;       // Bloodmage (rage)
+        case 21: return CLASS_HUNTER;        // Ranger (focus)
+        case 22: return CLASS_PRIEST;        // Chronomancer
+        case 23: return CLASS_DEATH_KNIGHT;  // Necromancer (runic)
+        case 24: return CLASS_PRIEST;        // Pyromancer
+        case 25: return CLASS_PALADIN;       // Cultist (mana+plate)
+        case 26: return CLASS_ROGUE;         // Starcaller (energy)
+        case 27: return CLASS_SHAMAN;        // Sun Cleric (mana+mail)
+        case 28: return CLASS_SHAMAN;        // Tinker (mana+mail)
+        case 29: return CLASS_PRIEST;        // Venomancer
+        case 30: return CLASS_DEATH_KNIGHT;  // Reaper (runic)
+        case 31: return CLASS_SHAMAN;        // Primalist (mana+mail)
+        case 32: return CLASS_PRIEST;        // Runemaster
+        default: return pClass;
+    }
+}
+
 bool Player::IsCoaManaged() const
 {
     auto catalog = sWorld.GetCoaCatalog();
