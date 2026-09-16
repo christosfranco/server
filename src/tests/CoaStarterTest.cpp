@@ -34,11 +34,6 @@ namespace
     }};
     std::vector<coa::StarterItem> Items()
     {
-        // Bags-and-weapons plus, 24.2, a shared cloth chest and legs available
-        // to every class/race pair. The final two rows are intentionally
-        // level-1 ordinary quality with `AllowableClass`/`AllowableRace` fully
-        // permissive, matching how a "Recruit's Shirt/Pants"-shaped shared
-        // starter looks in the Item store.
         return {
             {25,2,7,21,43,0xffffffff,0xffffffff,1,2,1,1,true,false},
             {2092,2,15,13,173,0xffffffff,0xffffffff,1,2,1,1,true,false},
@@ -46,49 +41,24 @@ namespace
             {2504,2,2,15,45,0xffffffff,0xffffffff,1,2,1,1,true,false},
             {2508,2,3,26,46,0xffffffff,0xffffffff,1,2,1,1,true,false},
             {2512,6,2,24,0,0xffffffff,0xffffffff,1,5,1,1000,false,false},
-            {2516,6,3,24,0,0xffffffff,0xffffffff,1,5,1,1000,false,false},
-            // Shared cloth chest (INVTYPE_CHEST=5) and legs (INVTYPE_LEGS=7),
-            // subclass 1 (cloth) so every class with the level-one cloth row
-            // fits. Skill 0 -- level-one cloth on this DBC has no skill line
-            // rank associated with the row, the same way stock 6117 Mail
-            // Armor is a level-20 grant not level-1.
-            {6116,4,1,5,0,0xffffffff,0xffffffff,1,1,1,1,true,false},
-            {6119,4,1,7,0,0xffffffff,0xffffffff,1,1,1,1,true,false}
+            {2516,6,3,24,0,0xffffffff,0xffffffff,1,5,1,1000,false,false}
         };
     }
     std::vector<coa::StarterProficiency> Proficiencies()
     {
         // Native restrictions, including the deployed DBC's minimum skill rank one.
-        // 24.2: an armour-proficiency row (spell 9078, Cloth, skill 415,
-        // itemClass 4, subclass 1) is required for every class that plans a
-        // cloth chest/legs starter; the row's associations mask makes it
-        // native for every playable class, matching what the client shows on
-        // the character sheet at level 1.
         return {{201,43,2,128,false,512,0,0,0,1,0,{{512,0xffffffff,0}}},
             {1180,173,2,32768,false,512,0,0,0,1,0,{{512,0xffffffff,0}}},
             {9116,433,4,64,false,1,0,0,0,1,0,{{1,0xffffffff,0}}},
             {264,45,2,4,false,16896,0,0,0,1,0,{{16896,0xffffffff,0}}},
             {266,46,2,8,false,4,0,0,0,1,0,{{4,0xffffffff,0}}},
             {674,118,-1,0,true,909,0,0,0,1,20,{{0xffffffff,0xffffffff,1}}},
-            {370094,118,-1,0,true,4061165568u,0,0,0,1,0,{{0xffffffff,0xffffffff,1}}},
-            {9078,415,4,2,false,0xffffffff,0,0,0,0,0,{{0xffffffff,0xffffffff,1}}}};
+            {370094,118,-1,0,true,4061165568u,0,0,0,1,0,{{0xffffffff,0xffffffff,1}}}};
     }
     bool Throws(std::function<void()> action)
     {
         try { action(); } catch (std::invalid_argument const&) { return true; }
         return false;
-    }
-    // Erase the proficiency with a specific spell id. 24.2 added the cloth
-    // armour row to Proficiencies() and pushed the pre-existing dual-wield
-    // 370094 row off the end, so tests that used to `pop_back()` the last
-    // row now name the row they mean.
-    std::vector<coa::StarterProficiency> Without(uint32_t spell)
-    {
-        auto prof = Proficiencies();
-        prof.erase(std::remove_if(prof.begin(), prof.end(),
-            [&](coa::StarterProficiency const& p) { return p.spell == spell; }),
-            prof.end());
-        return prof;
     }
 }
 
@@ -125,11 +95,6 @@ TEST(Coa_starter_focus_capacity_and_ancillary_mana)
     CHECK_EQ(coa::StarterManaRegenFloor(100), 2.0f);
     CHECK(Throws([&] { coa::StarterBaseMana(necromancer, 0, 0); }));
     auto plan = coa::PlanStarter(necromancer, 23, 1, Items(), Proficiencies());
-    // 24.2: the plan now also carries a chest/legs starter for every class;
-    // this test measures resource cost, not armour readiness, so it clears
-    // the two new slots to keep its assertion strictly about mana and cost.
-    plan.gear[4] = {};
-    plan.gear[5] = {};
     CHECK(!coa::StarterReady(plan, plan.gear, {}, 0, 0, false, true, 0, 100, 100, 0));
     CHECK(!coa::StarterReady(plan, plan.gear, {}, 0, 0, false, true, 100, 100, 12, 0));
     CHECK(coa::StarterReady(plan, plan.gear, {}, 0, 0, false, true, 100, 100, 13, 0));
@@ -168,7 +133,7 @@ TEST(Coa_starter_felsworn_falls_back_to_policy_674_when_no_native_370094_row)
     // (SpellLevel 20 -> level 1, MinSkillLineRank 1 -> 0). Class 14 must still
     // plan a dual-wield starter, as a POLICY grant, and Native wins when both
     // rows exist (the test above).
-    auto prof = Without(370094);        // no native dual-wield row (24.2: was pop_back())
+    auto prof = Proficiencies(); prof.pop_back();
     for (auto& p : prof) { if (p.spell == 674) { p.level = 1; p.minimumSkill = 0; } }
     auto felsworn = coa::PlanStarter(contexts[2], 14, 1, Items(), prof);
     CHECK(felsworn.proficiencies.count(674));
@@ -185,11 +150,7 @@ TEST(Coa_starter_felsworn_falls_back_to_policy_674_when_no_native_370094_row)
 
 TEST(Coa_starter_missing_incompatible_or_restricted_sources_fail_closed)
 {
-    // Without 370094 AND without the 674 policy exception (level 20 in the
-    // vanilla row here), Felsworn has no dual-wield source and PlanStarter
-    // throws. 24.2 changed the .pop_back() this used to be to an explicit
-    // erase because the cloth-armour row is now the last entry.
-    auto prof = Without(370094);
+    auto prof = Proficiencies(); prof.pop_back();
     CHECK(Throws([&] { coa::PlanStarter(contexts[2], 14, 1, Items(), prof); }));
     CHECK(Throws([&] { coa::PlanStarter(contexts[9], 21, 1, {}, Proficiencies()); }));
     auto items = Items(); items.erase(items.begin() + 3); // No bow, a gun cannot serve Ranger.
@@ -301,121 +262,4 @@ TEST(Coa_proficiency_accepts_native_weapon_marker_without_combat_effects)
     CHECK(!coa::StarterProficiencyEffects({25, 40, 0}));
     CHECK(!coa::StarterProficiencyEffects({25, 0, 0}));
     CHECK(!coa::StarterProficiencyEffects({0, 0, 0}));
-}
-
-// 24.2: every CoA class/race pair plans a chest and legs; the plan carries
-// the cloth-armour proficiency for that slot so PrepareCoaStarterInfrastructure
-// grants it before EquipCoaStarter runs; and StarterReady gates the runtime
-// slot on the armour-proficiency mask.
-TEST(Coa_starter_plans_chest_and_legs_for_every_class_and_gates_armor_proficiency)
-{
-    for (size_t index = 0; index < contexts.size(); ++index)
-    {
-        auto plan = coa::PlanStarter(contexts[index], uint32_t(index + 12), 1, Items(), Proficiencies());
-        CHECK_EQ(plan.gear[4].id, 6116u);              // shared cloth chest
-        CHECK_EQ(plan.gear[4].itemClass, 4u);
-        CHECK_EQ(plan.gear[4].subclass, 1u);
-        CHECK_EQ(plan.gear[4].inventoryType, 5u);
-        CHECK_EQ(plan.gear[5].id, 6119u);              // shared cloth legs
-        CHECK_EQ(plan.gear[5].itemClass, 4u);
-        CHECK_EQ(plan.gear[5].subclass, 1u);
-        CHECK_EQ(plan.gear[5].inventoryType, 7u);
-        CHECK(plan.proficiencies.count(9078));         // cloth armour granted
-        CHECK(plan.nativeProficiencies.count(9078));   // and it is native, not a policy grant
-        CHECK(!plan.policyProficiencies.count(9078));
-        // Armour proficiency drives the readiness check. The mask must at
-        // least cover Cloth (armour subclass 1); a class that also carries a
-        // shield in the off-hand slot needs the shield bit set as well, so
-        // the "pass" mask is derived from the plan itself. The "fail" mask
-        // omits Cloth specifically to prove the chest/legs gate closes.
-        uint32_t needed = 0;
-        for (auto const& item : plan.gear)
-        {
-            if (item.id && item.itemClass == 4 && item.subclass < 32)
-            {
-                needed |= (uint32_t(1) << item.subclass);
-            }
-        }
-        CHECK(needed & (uint32_t(1) << 1));            // every class plans a cloth chest/legs
-        uint32_t mana = coa::StarterBaseMana(contexts[index], 0, 100);
-        uint32_t power = contexts[index].power == -2 ? 100
-            : contexts[index].power == 1 || contexts[index].power == 6 ? 0
-            : coa::StarterPowerCapacity(contexts[index], contexts[index].power, mana);
-        // Removing the Cloth bit closes the chest/legs gate; every other
-        // armour subclass the plan asked for stays granted.
-        CHECK(!coa::StarterReady(plan, plan.gear, plan.skills, 0xffffffff, needed & ~(uint32_t(1) << 1),
-            plan.dualWield, true, mana, 100, power, 200));
-        CHECK(coa::StarterReady(plan, plan.gear, plan.skills, 0xffffffff, needed,
-            plan.dualWield, true, mana, 100, power, 200));
-    }
-}
-
-// The chest/legs slots are gated on FitsSlot: a shield in chest, a robe in
-// legs, or a plate item without plate in the mask all trip StarterReady.
-TEST(Coa_starter_armor_slots_fail_when_slot_content_or_proficiency_is_wrong)
-{
-    auto plan = coa::PlanStarter(contexts[0], 12, 1, Items(), Proficiencies());
-    // Chest slot with a shield -> FitsSlot rejects (shield subclass 6, invType 14).
-    auto swap = plan.gear;
-    swap[4] = coa::StarterItem{2362,4,6,14,433,0xffffffff,0xffffffff,1,1,0,1,true,false};
-    CHECK(!coa::StarterReady(plan, swap, plan.skills, 0xffffffff, (uint32_t(1) << 1),
-        plan.dualWield, true, 100, 100, 100, 200));
-    // Legs slot empty (id=0) -> StarterReady skips because plan.gear[5] is
-    // still populated, but equipped[5] is zero: FitsSlot on the zero item
-    // fails -- confirms the "occupied slot" branch is real, not only a plan
-    // absence.
-    swap = plan.gear;
-    swap[5] = coa::StarterItem{};
-    CHECK(!coa::StarterReady(plan, swap, plan.skills, 0xffffffff, (uint32_t(1) << 1),
-        plan.dualWield, true, 100, 100, 100, 200));
-    // A plate chest (subclass 4) with only cloth (bit 1) in the mask fails
-    // even when the plan itself carried the cloth chest, because equipment is
-    // what StarterReady reads.
-    swap = plan.gear;
-    swap[4] = coa::StarterItem{6117,4,4,5,0,0xffffffff,0xffffffff,1,1,1,1,true,false};
-    CHECK(!coa::StarterReady(plan, swap, plan.skills, 0xffffffff, (uint32_t(1) << 1),
-        plan.dualWield, true, 100, 100, 100, 200));
-}
-
-// When no cloth-armour proficiency row is reachable to the class, the planner
-// does not synthesize one: 24.2 chose to keep armour Native-only for shared
-// cloth, so an absent proficiency row simply leaves the slot empty (best
-// effort) rather than granting a policy proficiency the character never had.
-TEST(Coa_starter_armor_slot_stays_empty_when_no_native_cloth_proficiency_exists)
-{
-    auto prof = Without(9078);                          // drop the cloth-armour row
-    auto plan = coa::PlanStarter(contexts[0], 12, 1, Items(), prof);
-    CHECK_EQ(plan.gear[4].id, 0u);
-    CHECK_EQ(plan.gear[5].id, 0u);
-    CHECK(!plan.proficiencies.count(9078));
-    // A player logging in without a cloth chest and without the proficiency is
-    // still ready if the weapon plan is met -- armour is best-effort, not a
-    // hard-fail on realms whose DBC snapshot has no shared cloth row.
-    uint32_t mana = coa::StarterBaseMana(contexts[0], 0, 100);
-    uint32_t power = coa::StarterPowerCapacity(contexts[0], contexts[0].power, mana);
-    CHECK(coa::StarterReady(plan, plan.gear, plan.skills, 0xffffffff, 0, plan.dualWield,
-        true, mana, 100, power, 0));
-}
-
-// The chest/legs items are ordinary shared rows: level-1, quality 1, itemLevel
-// <= 5, no restrictions. Restrictions and above-level filters catch them the
-// same way they catch weapons, so a level-2 or restricted item is silently
-// dropped and the slot returns empty rather than shipping a bad item.
-TEST(Coa_starter_armor_selection_respects_level_quality_and_restriction_gates)
-{
-    auto items = Items();
-    // chest at index 7, legs at index 8; move chest above level 1.
-    items[7].level = 2;
-    auto plan = coa::PlanStarter(contexts[0], 12, 1, items, Proficiencies());
-    CHECK_EQ(plan.gear[4].id, 0u);
-    CHECK_EQ(plan.gear[5].id, 6119u);
-    items = Items();
-    items[8].restricted = true;
-    plan = coa::PlanStarter(contexts[0], 12, 1, items, Proficiencies());
-    CHECK_EQ(plan.gear[5].id, 0u);
-    CHECK_EQ(plan.gear[4].id, 6116u);
-    items = Items();
-    items[7].quality = 2;
-    plan = coa::PlanStarter(contexts[0], 12, 1, items, Proficiencies());
-    CHECK_EQ(plan.gear[4].id, 0u);
 }

@@ -241,16 +241,22 @@ namespace coa
             }
             if (!found)
             {
-                // Weapon roles remain hard requirements: no runnable class fits
-                // the starter spell without them. Body armour is best-effort at
-                // plan time -- if the DBC snapshot has no shared cloth chest a
-                // class can wear, the character still boots and the login-time
-                // repair retries when a compatible item is added to the data
-                // set. 24.2 keeps that door open rather than refusing creation.
-                if (!armour)
-                {
-                    throw std::invalid_argument("CoA starter missing compatible gear/proficiency for role " + std::to_string(slot));
-                }
+                // 24.2: every supported CoA race/class pair gets chest AND legs.
+                // Fail closed with class/race/slot named, exactly the way weapon
+                // roles have always failed closed. A DBC snapshot without a
+                // shared body-armour row that a class can wear is a data gap
+                // the operator must see at world init, not a silent gap the
+                // character carries into the world.
+                char const* roleName = role == StarterSlot::MainHand ? "main-hand"
+                    : role == StarterSlot::OffHand ? "off-hand"
+                    : role == StarterSlot::Ranged ? "ranged"
+                    : role == StarterSlot::Ammo ? "ammo"
+                    : role == StarterSlot::Chest ? "chest"
+                    : role == StarterSlot::Legs ? "legs"
+                    : "unknown";
+                throw std::invalid_argument("CoA starter missing compatible gear/proficiency for role "
+                    + std::to_string(slot) + " (" + roleName + ") class "
+                    + std::to_string(playerClass) + " race " + std::to_string(race));
             }
         }
         return plan;
