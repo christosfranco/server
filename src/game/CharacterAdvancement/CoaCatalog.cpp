@@ -304,6 +304,20 @@ namespace coa
     Build Catalog::Authorize(uint32_t playerClass, uint32_t level, uint32_t specId,
         Ranks const& requested) const
     {
+        return Authorize(playerClass, level, specId, requested, nullptr);
+    }
+
+    Build Catalog::Authorize(uint32_t playerClass, uint32_t level, uint32_t specId,
+        Ranks const& requested, AuthorizationError* offender) const
+    {
+        auto blame = [&](uint32_t entry, uint32_t rank)
+        {
+            if (offender)
+            {
+                offender->entry = entry;
+                offender->rank = rank;
+            }
+        };
         Require(HasClass(playerClass) && level >= 1 && level <= 60, "CoA invalid character context");
         Require(!specId || (m_specs.count(specId) && m_specs.at(specId).playerClass == playerClass &&
             level >= 10), "CoA invalid specialization");
@@ -312,11 +326,22 @@ namespace coa
         Ranks desired = requested;
         for (auto const& pair : desired)
         {
-            Require(m_entries.count(pair.first), "CoA unknown entry");
+            if (!m_entries.count(pair.first))
+            {
+                blame(pair.first, pair.second);
+                Require(false, "CoA unknown entry");
+            }
             auto const& e = m_entries.at(pair.first);
-            Require(pair.second && pair.second <= e.maxRank, "CoA invalid entry rank");
-            Require(e.playerClass == playerClass && (e.owners.empty() || e.owners.count(specId)),
-                "CoA entry not owned");
+            if (!pair.second || pair.second > e.maxRank)
+            {
+                blame(pair.first, pair.second);
+                Require(false, "CoA invalid entry rank");
+            }
+            if (!(e.playerClass == playerClass && (e.owners.empty() || e.owners.count(specId))))
+            {
+                blame(pair.first, pair.second);
+                Require(false, "CoA entry not owned");
+            }
         }
         if (specId)
         {
@@ -330,6 +355,7 @@ namespace coa
             cost[1] += uint64_t(m_entries.at(pair.first).te) * pair.second;
         }
         auto const& budget = m_budgets.at({playerClass, level});
+        // Whole-set refusal: no single offender, so the offender stays 0.
         Require(cost[0] <= budget[0] && cost[1] <= budget[1], "CoA essence budget exceeded");
         Ranks traversal = desired;
         for (auto const& pair : m_entries)
@@ -412,8 +438,11 @@ namespace coa
         } while (changed);
         for (auto const& pair : desired)
         {
-            Require(build.entries.count(pair.first) && build.entries.at(pair.first) >= pair.second,
-                "CoA build not traversable");
+            if (!(build.entries.count(pair.first) && build.entries.at(pair.first) >= pair.second))
+            {
+                blame(pair.first, pair.second);
+                Require(false, "CoA build not traversable");
+            }
         }
         Require(build.entries.size() <= 1024, "CoA canonical build exceeds packet bound");
         for (auto const& pair : build.entries)

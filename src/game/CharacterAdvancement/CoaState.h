@@ -48,9 +48,13 @@ namespace coa
     };
     Ranks EntryRanks(std::vector<analytic::CoaEntry> const& entries);
     // No Player or SQL globals: tests inject a store and verify the commit boundary.
+    // On Rejected, *refusal names the offending entry/rank where the check
+    // knows one (not-owned, not-traversable, protected metadata) and stays
+    // {0, 0} where the refusal blames the whole set (budget) or no entry.
     ApplyStatus Replace(Catalog const& catalog, Store& store, State& current,
         uint32_t playerClass, uint32_t level, std::vector<analytic::CoaEntry> const& desired,
-        int64_t now, Build& installed, std::string& error, MutationSource source = MutationSource::Request);
+        int64_t now, Build& installed, std::string& error, MutationSource source = MutationSource::Request,
+        AuthorizationError* refusal = nullptr);
     bool ValidateLoaded(Catalog const& catalog, State const& state, uint32_t guid,
         uint32_t playerClass, uint32_t level, Build& build);
 }

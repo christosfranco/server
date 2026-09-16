@@ -53,10 +53,16 @@ namespace coa
 
     ApplyStatus Replace(Catalog const& catalog, Store& store, State& current,
         uint32_t playerClass, uint32_t level, std::vector<analytic::CoaEntry> const& desired,
-        int64_t now, Build& installed, std::string& error, MutationSource source)
+        int64_t now, Build& installed, std::string& error, MutationSource source,
+        AuthorizationError* refusal)
     {
         State next;
         Build build;
+        AuthorizationError authorized;
+        if (refusal)
+        {
+            *refusal = AuthorizationError{};
+        }
         try
         {
             if (!current.guid || now < 0 || current.revision == std::numeric_limits<uint64_t>::max() ||
@@ -71,6 +77,11 @@ namespace coa
                 old.emplace(e.entryId, e);
                 if (source != MutationSource::Reset && e.locked && (!requested.count(e.entryId) || requested.at(e.entryId) != e.rank))
                 {
+                    if (refusal)
+                    {
+                        refusal->entry = e.entryId;
+                        refusal->rank = e.rank;
+                    }
                     throw std::invalid_argument("CoA protected entry changed");
                 }
             }
@@ -80,10 +91,15 @@ namespace coa
                 if ((prior == old.end() && e.locked) || (prior != old.end() &&
                     (e.locked != prior->second.locked || e.learnedTime != prior->second.learnedTime)))
                 {
+                    if (refusal)
+                    {
+                        refusal->entry = e.entryId;
+                        refusal->rank = e.rank;
+                    }
                     throw std::invalid_argument("CoA protected metadata changed");
                 }
             }
-            build = catalog.Authorize(playerClass, level, catalog.SelectedSpec(requested), requested);
+            build = catalog.Authorize(playerClass, level, catalog.SelectedSpec(requested), requested, refusal ? &authorized : nullptr);
             next.guid = current.guid;
             next.catalogRevision = catalog.Revision();
             next.revision = current.revision + 1;
@@ -111,6 +127,14 @@ namespace coa
         catch (std::invalid_argument const& e)
         {
             error = e.what();
+            // Authorize names its offender structurally; a protected-metadata
+            // refusal already set *refusal above, so only fill it in when the
+            // authorizer blamed someone (budget and wire-shape refusals
+            // legitimately stay 0).
+            if (refusal && authorized.entry)
+            {
+                *refusal = authorized;
+            }
             return ApplyStatus::Rejected;
         }
         if (source == MutationSource::Request && current.revision && current.entries.size() == next.entries.size() &&

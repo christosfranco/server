@@ -36,6 +36,15 @@ namespace coa
         std::set<uint32_t> spells;
     };
 
+    // The single entry a refusal blames, carried structurally (never parsed
+    // out of the error text). Zero when the refusal blames the whole set
+    // (budget) or no entry at all (gates, wire-shape errors).
+    struct AuthorizationError
+    {
+        uint32_t entry = 0;
+        uint32_t rank = 0;
+    };
+
     // Only constructed after the complete bounded input and independent pin pass.
     class Catalog
     {
@@ -46,6 +55,8 @@ namespace coa
             std::string const& expectedSha256);
         Build Authorize(uint32_t playerClass, uint32_t level, uint32_t spec,
             Ranks const& requested) const;
+        Build Authorize(uint32_t playerClass, uint32_t level, uint32_t spec,
+            Ranks const& requested, AuthorizationError* offender) const;
         uint32_t SelectedSpec(Ranks const& entries) const;
         bool HasClass(uint32_t id) const { return m_classes.count(id) != 0; }
         std::string const& Revision() const { return m_revision; }

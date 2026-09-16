@@ -838,8 +838,9 @@ bool Player::ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired)
     }
     coa::SqlStore store(CharacterDatabase, {getClass(), getLevel(), GetUInt32Value(PLAYER_XP)});
     std::string error;
+    coa::AuthorizationError refusal;
     auto status = coa::Replace(*sWorld.GetCoaCatalog(), store, m_coaState, getClass(), getLevel(),
-        desired, std::time(nullptr), m_coaBuild, error);
+        desired, std::time(nullptr), m_coaBuild, error, coa::MutationSource::Request, &refusal);
     if (status == coa::ApplyStatus::Failed)
     {
         m_coaFailed = true;
@@ -861,9 +862,14 @@ bool Player::ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired)
     // (the client shows it and never parses it), the same way HandleCoaReplace
     // names its gate. A bare NOT_TRAVERSIBLE cannot say WHICH entry the
     // traversal could not reach, and the client's authorizer and the core's
-    // can disagree -- that is exactly what a reader needs to see.
+    // can disagree -- that is exactly what a reader needs to see. The numeric
+    // err_entry/err_rank name that entry where the check knows one
+    // (not-owned, not-traversable, protected metadata); a whole-set budget
+    // refusal has no single offender and stays 0.
     auto result = coa::analytic::BuildUpdateResultPacket(
-        token, token == coa::analytic::ResultToken::NotTraversible ? error : std::string(), 0, 0);
+        token, token == coa::analytic::ResultToken::NotTraversible ? error : std::string(),
+        token == coa::analytic::ResultToken::NotTraversible ? refusal.entry : 0,
+        token == coa::analytic::ResultToken::NotTraversible ? refusal.rank : 0);
     GetSession()->SendPacket(&result);
     return status == coa::ApplyStatus::Applied;
 }

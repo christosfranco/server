@@ -346,6 +346,71 @@ TEST(Coa_no_diff_requests_do_not_write_and_internal_level_reset_changes_commit)
     CHECK_EQ(store.commits, 3u);
 }
 
+TEST(Coa_refusal_names_offending_entry_and_budget_names_none)
+{
+    // 23.17(c): the 0x72C err_entry/err_rank come out of Replace
+    // structurally. A refusal that blames one entry names it; a whole-set
+    // budget refusal (and wire-shape refusals) stay 0. Error strings are
+    // byte-identical: the client shows them, it never parses them.
+    auto c = Catalog();
+    coa::Build installed;
+    std::string error;
+
+    // Not owned: 107 belongs to spec 2, requested under spec 1's marker.
+    {
+        FakeStore store;
+        coa::State current; current.guid = 7;
+        coa::AuthorizationError refusal;
+        CHECK(coa::Replace(*c, store, current, 12, 60, {{100, 1}, {107, 1}}, 100,
+            installed, error, coa::MutationSource::Request, &refusal) == coa::ApplyStatus::Rejected);
+        CHECK_STR(error, std::string("CoA entry not owned"));
+        CHECK_EQ(refusal.entry, 107u);
+        CHECK_EQ(refusal.rank, 1u);
+    }
+
+    // Not traversable: 110 needs 3 prior tab AE; 101 + 106 fund only 2.
+    {
+        FakeStore store;
+        coa::State current; current.guid = 7;
+        coa::AuthorizationError refusal;
+        CHECK(coa::Replace(*c, store, current, 12, 60, {{100, 1}, {106, 1}, {110, 1}}, 100,
+            installed, error, coa::MutationSource::Request, &refusal) == coa::ApplyStatus::Rejected);
+        CHECK_STR(error, std::string("CoA build not traversable"));
+        CHECK_EQ(refusal.entry, 110u);
+        CHECK_EQ(refusal.rank, 1u);
+    }
+
+    // Budget: at 10 the package already spends the 1 AE, so +106 exceeds
+    // the whole set -- no single offender, 0 is correct.
+    {
+        FakeStore store;
+        coa::State current; current.guid = 7;
+        coa::AuthorizationError refusal;
+        CHECK(coa::Replace(*c, store, current, 12, 10, {{100, 1}, {106, 1}}, 100,
+            installed, error, coa::MutationSource::Request, &refusal) == coa::ApplyStatus::Rejected);
+        CHECK_STR(error, std::string("CoA essence budget exceeded"));
+        CHECK_EQ(refusal.entry, 0u);
+        CHECK_EQ(refusal.rank, 0u);
+    }
+
+    // Protected metadata: the tampered entry is the offender.
+    {
+        FakeStore store;
+        coa::State current; current.guid = 7;
+        coa::AuthorizationError refusal;
+        REQUIRE(coa::Replace(*c, store, current, 12, 10, {{100, 1}}, 100,
+            installed, error, coa::MutationSource::Request, &refusal) == coa::ApplyStatus::Applied);
+        auto desired = current.entries;
+        REQUIRE(!desired.empty());
+        desired[0].learnedTime += 1;
+        CHECK(coa::Replace(*c, store, current, 12, 10, desired, 200,
+            installed, error, coa::MutationSource::Request, &refusal) == coa::ApplyStatus::Rejected);
+        CHECK_STR(error, std::string("CoA protected metadata changed"));
+        CHECK_EQ(refusal.entry, desired[0].entryId);
+        CHECK_EQ(refusal.rank, desired[0].rank);
+    }
+}
+
 TEST(Coa_profile_class_gate_rate_work_bound_and_mailbox_coalescing)
 {
     using P = proto::ConnectionProfile;
