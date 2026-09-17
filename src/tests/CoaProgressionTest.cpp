@@ -134,6 +134,27 @@ TEST(Coa_levels_1_9_10_60_voluntary_spec_and_base_rank_upgrade)
 
 TEST(Coa_wrong_class_branch_multiple_markers_rank_budget_and_cycles)
 {
+    // [C] 2026-09-17 (plans/character-foundations.md 24.5): the last
+    // assertion in this test used to require Rejected for
+    // c->Authorize(12, 10, 1, {{106, 1}}).
+    //   Old:  at level 10 the spec-1 package (marker 100 + root 101, ae 1)
+    //         plus the requested 106 (ae 1) totals ae 2 vs budget ae 1;
+    //         Authorize refused "CoA essence budget exceeded" and the
+    //         Rejected() lambda observed the throw.
+    //   New:  essence does not participate in authorization (CoaCatalog.cpp
+    //         Authorize no longer applies the whole-set budget refusal);
+    //         the same build is otherwise valid -- ownership OK (106 owned
+    //         by spec 1), rank 1 <= maxRank 2, prerequisites empty,
+    //         traversal reaches 106 through the auto-added free trait 105
+    //         (spec-1 owned, 0/0, connections={101}) which itself reaches
+    //         the auto-added root 101. So Authorize now returns a Build
+    //         with {100, 101, 105, 106} at rank 1 and does not throw.
+    //   Why:  deliberate specification change requested by the owner and
+    //         landed in the same series of commits as this rewrite; the
+    //         old-behaviour assertion encoded a refusal that no longer
+    //         fires. The four preceding legs of this TEST (wrong class,
+    //         branch/marker/rank/cycle refusals) still fire on their own
+    //         reasons and are unchanged.
     auto c = Catalog();
     CHECK(Rejected([&] { c->Authorize(13, 60, 1, {}); }));
     for (coa::Ranks r : {coa::Ranks{{104, 1}}, {{107, 1}}, {{102, 1}}, {{106, 0}}, {{106, 3}}, {{108, 1}, {109, 1}}})
@@ -141,7 +162,13 @@ TEST(Coa_wrong_class_branch_multiple_markers_rank_budget_and_cycles)
         CHECK(Rejected([&] { c->Authorize(12, 60, 1, r); }));
     }
     CHECK(Rejected([&] { c->SelectedSpec({{100, 1}, {102, 1}}); }));
-    CHECK(Rejected([&] { c->Authorize(12, 10, 1, {{106, 1}}); }));
+    // Formerly essence-refused build -- now authorizes on graph terms alone.
+    // Costs stay in the catalog (2 AE vs budget 1) as reference data only.
+    auto formerlyEssenceBudget = c->Authorize(12, 10, 1, {{106, 1}});
+    CHECK(formerlyEssenceBudget.entries.count(100) &&
+        formerlyEssenceBudget.entries.count(101) &&
+        formerlyEssenceBudget.entries.count(105) &&
+        formerlyEssenceBudget.entries.at(106) == 1);
 }
 
 TEST(Coa_free_trait_closure_prerequisite_investment_and_shared_root)
@@ -349,9 +376,41 @@ TEST(Coa_no_diff_requests_do_not_write_and_internal_level_reset_changes_commit)
 TEST(Coa_refusal_names_offending_entry_and_budget_names_none)
 {
     // 23.17(c): the 0x72C err_entry/err_rank come out of Replace
-    // structurally. A refusal that blames one entry names it; a whole-set
-    // budget refusal (and wire-shape refusals) stay 0. Error strings are
-    // byte-identical: the client shows them, it never parses them.
+    // structurally. A refusal that blames one entry names it; a wire-shape
+    // refusal stays 0. Error strings are byte-identical: the client shows
+    // them, it never parses them.
+    //
+    // [C] 2026-09-17 (plans/character-foundations.md 24.5): the third
+    // block of this test used to require Rejected with error "CoA essence
+    // budget exceeded" and offender {0, 0} for
+    // Replace(12, 10, {{100, 1}, {106, 1}}) -- the whole-set-budget
+    // refusal whose no-single-offender property was the very reason
+    // 23.17(c) named this test "..._budget_names_none".
+    //   Old:  at level 10 the spec-1 package (marker 100 + root 101, ae 1)
+    //         plus 106 (ae 1) totalled ae 2 vs budget ae 1; Authorize
+    //         raised "CoA essence budget exceeded" as a whole-set refusal
+    //         with no offender, so refusal.entry/rank stayed 0 and Replace
+    //         mapped it to Rejected.
+    //   New:  essence does not participate in authorization. The same
+    //         build satisfies ownership, ranks, prerequisites, traversal
+    //         (through the auto-added free trait 105) and the ordinary
+    //         point budget, so Replace applies it and commits: the store
+    //         records the commit and current.entries carries {100, 101,
+    //         105, 106}. The old error string is no longer written by
+    //         the server anywhere in this run.
+    //   Why:  deliberate specification change (24.5). Essence budgets
+    //         still exist in the catalog and still ship to the companion
+    //         as reference/display data (GetRemainingAE/TE and the
+    //         counters), but the whole-set refusal is gone. The
+    //         "budget_names_none" property this test's name captured is
+    //         now vacuous for essence in particular; the "names_none"
+    //         behaviour is still true for other whole-set refusals
+    //         (wire malformation, oversize builds) and this rewrite
+    //         does not weaken those.
+    //
+    // The three preserved blocks (not-owned/107, not-traversable/110,
+    // protected-metadata) are unchanged: this rewrite only replaces the
+    // essence-budget leg, not the surrounding structural refusals.
     auto c = Catalog();
     coa::Build installed;
     std::string error;
@@ -380,17 +439,22 @@ TEST(Coa_refusal_names_offending_entry_and_budget_names_none)
         CHECK_EQ(refusal.rank, 1u);
     }
 
-    // Budget: at 10 the package already spends the 1 AE, so +106 exceeds
-    // the whole set -- no single offender, 0 is correct.
+    // Formerly essence-refused: at level 10 the package + 106 totalled
+    // 2 AE vs budget 1. Now applies on graph terms alone; no error is
+    // written; the store commits and current.entries carries the
+    // requested picks together with the auto-added root and free trait.
     {
         FakeStore store;
         coa::State current; current.guid = 7;
         coa::AuthorizationError refusal;
+        error.clear();
         CHECK(coa::Replace(*c, store, current, 12, 10, {{100, 1}, {106, 1}}, 100,
-            installed, error, coa::MutationSource::Request, &refusal) == coa::ApplyStatus::Rejected);
-        CHECK_STR(error, std::string("CoA essence budget exceeded"));
-        CHECK_EQ(refusal.entry, 0u);
-        CHECK_EQ(refusal.rank, 0u);
+            installed, error, coa::MutationSource::Request, &refusal) == coa::ApplyStatus::Applied);
+        CHECK_EQ(store.commits, 1u);
+        CHECK(error.empty());
+        coa::Ranks got;
+        for (auto const& e : current.entries) { got.emplace(e.entryId, e.rank); }
+        CHECK((got == coa::Ranks{{100, 1}, {101, 1}, {105, 1}, {106, 1}}));
     }
 
     // Protected metadata: the tampered entry is the offender.
