@@ -757,6 +757,41 @@ namespace coa::combat
                     // exactly as an ungated generator does after its Delta.
                     // Class mismatch is a hard refusal: that generator is
                     // not this actor's resource at all.
+                    //
+                    // 24.2 issue #7: the resource's own knownMarker
+                    // (Resource::knownMarker) is a second, symmetric
+                    // gain-only precondition, but ONLY when the marker
+                    // itself is the reason the pool is currently inactive.
+                    // The Pyromancer starter generator
+                    // {800790, 24, 807389, 20, GeneratorGate::None, 0}
+                    // targets Heat {807389, 24, 150, 300755, false}: the
+                    // knownMarker 300755 (Native Intellect) is granted by
+                    // CoA talent entry 4039 at required level 10, so a
+                    // level-1..9 Pyromancer has not learned it and the Heat
+                    // pool is not active. Under the same "gate is gain-only,
+                    // parent still casts" rule 8bfd80452 established, this
+                    // marker-not-yet-learned case must silently drop the +N
+                    // grant rather than let Delta throw Status::Unauthorized
+                    // and turn the whole cast into SMSG_CAST_FAILED reason
+                    // 107. This is exactly the resource-defined,
+                    // class-matched, marker-required, marker-not-known
+                    // predicate: every other refusal path stays hard, and
+                    // must, because it names a mis-authored generator or a
+                    // mis-authored source->resource edge that Delta is the
+                    // authoritative validator for. A missing resource id
+                    // (unknown resource), a class-mismatched resource
+                    // (generator points at another class's pool), a
+                    // resource with knownMarker=0 (no marker gate at all),
+                    // and a resource whose marker is known all still reach
+                    // Delta, so its !r / !ResourceAllowed / !Authorized
+                    // preflight remains the single point of hard failure
+                    // for those cases. Once the marker is learned,
+                    // inactiveMarker becomes false and the +20 Heat
+                    // semantics resume, identical to every prior run of
+                    // CoaCombat_lua_port_flare_knight_ranger_cultist_reaper_amounts
+                    // (src/tests/CoaCombatRulesTest.cpp:1136, whose Fixture
+                    // sets 300755 known at line 17 and continues to assert
+                    // Value(807389)==20).
                     auto const* g = FindGenerator(e.spell);
                     if (g->playerClass != c.playerClass) { throw Status::Unauthorized; }
                     if (e.effects.size || e.target != c.actor) { throw Status::Invalid; }
@@ -770,7 +805,13 @@ namespace coa::combat
                             gated = Known(c, g->gateSpell) || SelfAura(c, g->gateSpell);
                             break;
                     }
-                    if (gated) { Delta(c, s, e.spell, g->resource, c.actor, g->amount, false); }
+                    auto const* resource = FindResource(g->resource);
+                    bool inactiveMarker = resource && resource->playerClass == c.playerClass &&
+                        resource->knownMarker && !Known(c, resource->knownMarker);
+                    if (gated && !inactiveMarker)
+                    {
+                        Delta(c, s, e.spell, g->resource, c.actor, g->amount, false);
+                    }
                 }
                 else if (e.kind == EventKind::Cast || e.kind == EventKind::CapModifier)
                 {
