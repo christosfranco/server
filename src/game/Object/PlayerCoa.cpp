@@ -974,8 +974,10 @@ bool Player::ApplyCoa(std::vector<coa::analytic::CoaEntry> const& desired)
     // traversal could not reach, and the client's authorizer and the core's
     // can disagree -- that is exactly what a reader needs to see. The numeric
     // err_entry/err_rank name that entry where the check knows one
-    // (not-owned, not-traversable, protected metadata); a whole-set budget
-    // refusal has no single offender and stays 0.
+    // (not-owned, not-traversable, protected metadata); wire-shape refusals
+    // that blame no single entry stay 0. [C] 2026-09-17 (PLAN 24.5): the
+    // whole-set essence-budget refusal is gone -- costs and budgets are
+    // reference data now, not authorization.
     auto result = coa::analytic::BuildUpdateResultPacket(
         token, token == coa::analytic::ResultToken::NotTraversible ? error : std::string(),
         token == coa::analytic::ResultToken::NotTraversible ? refusal.entry : 0,

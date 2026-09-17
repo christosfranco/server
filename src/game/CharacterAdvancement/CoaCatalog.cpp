@@ -348,15 +348,14 @@ namespace coa
             desired[m_specs.at(specId).marker] = desired[m_specs.at(specId).root] = 1;
         }
         Require(SelectedSpec(desired) == specId, "CoA specialization mismatch");
-        std::array<uint64_t, 2> cost{};
-        for (auto const& pair : desired)
-        {
-            cost[0] += uint64_t(m_entries.at(pair.first).ae) * pair.second;
-            cost[1] += uint64_t(m_entries.at(pair.first).te) * pair.second;
-        }
-        auto const& budget = m_budgets.at({playerClass, level});
-        // Whole-set refusal: no single offender, so the offender stays 0.
-        Require(cost[0] <= budget[0] && cost[1] <= budget[1], "CoA essence budget exceeded");
+        // [C] 2026-09-17 (PLAN 24.5): essence is not a restriction on this
+        // realm. Costs and budgets remain in the catalog for reference/display
+        // (the per-level {ae, te} row still ships to the companion and the
+        // counters), but the whole-set refusal that historically rejected a
+        // valid graph for exceeding AE/TE is gone. Ownership, ranks,
+        // prerequisites, traversal and ordinary point budgets are unchanged.
+        // See `plans/character-foundations.md` 24.5.
+        (void) m_budgets.at({playerClass, level});
         Ranks traversal = desired;
         for (auto const& pair : m_entries)
         {
