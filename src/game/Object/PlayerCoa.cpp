@@ -651,6 +651,22 @@ bool Player::InitializeCoa(bool creating)
         // which is what keeps character_spell re-projectable after the
         // managed-spell save sweep.
         for (auto spell : coa::StarterSpells(getClass())) { seeds.insert(spell); }
+        // 24.2b: the PlanStarter spell (m_baseSpells / catalog BaseSpell) is
+        // the class's authorial starter cast. 13 of 21 CoA classes carry a
+        // plan spell that is NOT in the static StarterSpells book above (the
+        // book comes from the offline research/ascension-reference JSON, the
+        // plan spell from the compiled catalog; on this DBC the two sources
+        // agree for 8 classes and disagree for 13). Authorize() already
+        // inserts BaseSpell into m_coaBuild.spells, so this seed is a safety
+        // belt against a future Authorize refactor: an explicit union here
+        // guarantees managed ownership regardless of catalog compilation
+        // choices, matching how the book set is unioned. No donor ability is
+        // granted -- the id is the class's own native starter spell that
+        // CoaStarterData already validated for damage/power/proficiency.
+        if (auto plan = GetCoaStarter())
+        {
+            seeds.insert(plan->spell.id);
+        }
         // Include class skill spells outside the ordinary purchasable catalog
         // (disabled nodes, old ranks, legacy skill grants). They must not become
         // an alternate authority just because no current ENTRY points at them.
@@ -783,6 +799,21 @@ bool Player::ReconcileCoaSpells()
                 sLog.outError("CoA starter spell %u absent from Spell.dbc for class %u", spell, uint32(getClass()));
             }
         }
+        // 24.2b: the plan's own starter spell belongs beside the static book.
+        // Authorize()'s BaseSpell insert already puts it in m_coaBuild.spells
+        // and therefore in `desired`; the second insert here is intentional
+        // and idempotent (std::set), and the log gives operators a single
+        // grep target when the plan spell is absent from the DBC snapshot,
+        // matching the shape used above for the static book members.
+        if (auto plan = GetCoaStarter())
+        {
+            if (sSpellStore.LookupEntry(plan->spell.id)) { desired.insert(plan->spell.id); }
+            else
+            {
+                sLog.outError("CoA plan starter spell %u absent from Spell.dbc for class %u",
+                    plan->spell.id, uint32(getClass()));
+            }
+        }
         // Independent quest/profession/racial roots keep shared dependencies.
         for (auto const& spell : m_spells)
         {
@@ -837,6 +868,41 @@ bool Player::ReconcileCoaSpells()
             if (!HasSpell(spell))
             {
                 throw std::runtime_error("CoA authorized spell installation failed: " + std::to_string(spell));
+            }
+        }
+        // 24.2b: the plan's starter spell must be castable by the character
+        // after reconcile, always. Rank-supersession in Player::addSpell
+        // (PlayerSpell.cpp lines 371-426) can set `active = false` on the
+        // starter row when a higher-rank spell in the same chain is added
+        // later in the same `desired` pass -- exactly the class-13 (Witch
+        // Doctor) failure the live 24.2 gate saw: the plan spell 807037 was
+        // in m_spells but active=false, so HasActiveSpell() returned false
+        // and SpellHandler.cpp refused the cast with "casts spell 807037
+        // which he shouldn't have". 13 of 21 CoA classes have a plan spell
+        // that is not in the static coa::StarterSpells book and is thus a
+        // rank in a chain the catalog reaches -- the audit is in the commit
+        // message. The starter spell is the class's authored level-1 cast
+        // (CoaStarterData validated it for damage, power, proficiency), so
+        // it is authoritative regardless of what the client's spellbook
+        // rank display looks like: the action button EquipCoaStarter added
+        // is plan->spell.id, and HasActiveSpell must agree. This does NOT
+        // grant a donor ability (the id came from the catalog's own
+        // BaseSpell for this class), does NOT relax the authorization
+        // closure (`desired` already contained the id), and does NOT touch
+        // the client-visible superceded-rank chain: it only lifts the
+        // server-side `active` bit on this one row. Marked CHANGED so
+        // _SaveSpells persists the corrected state.
+        if (auto plan = GetCoaStarter())
+        {
+            auto itr = m_spells.find(plan->spell.id);
+            if (itr != m_spells.end() && itr->second.state != PLAYERSPELL_REMOVED &&
+                !itr->second.disabled && !itr->second.active)
+            {
+                itr->second.active = true;
+                if (itr->second.state != PLAYERSPELL_NEW)
+                {
+                    itr->second.state = PLAYERSPELL_CHANGED;
+                }
             }
         }
         m_coaReconciling = false;
