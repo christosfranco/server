@@ -1551,6 +1551,8 @@ void ObjectMgr::LoadSpellTemplate()
     sLog.outString(">> Loaded %u spell definitions", sSpellTemplate.GetRecordCount());
     sLog.outString();
 
+    uint32 mergedDbcSpells = 0;
+    uint32 insertedServerSpells = 0;
     for (uint32 i = 1; i < sSpellTemplate.GetMaxEntry(); ++i)
     {
         // check data correctness
@@ -1560,17 +1562,88 @@ void ObjectMgr::LoadSpellTemplate()
             continue;
         }
 
+        // spell_template's SQL schema (SpellTemplatesrcfmt in SQLStorages.cpp,
+        // 16 columns) and its dst layout (SpellTemplatedstfmt) only author 15
+        // SpellEntry members plus the id -- see tools/make-ca-spell-template.py
+        // for the canonical list and PLAN 21.5 rationale. Every position the
+        // dst format does not cover is zero-defaulted at load time and
+        // EquippedItemClass gets -1 through SQLSpellLoader::default_fill.
+        //
+        // For an id that Spell.dbc already carries, replacing the SpellEntry
+        // pointer with sSpellTemplate's partial record silently overwrote the
+        // DBC's authoritative values for EquippedItemClass/Subclass/InvTypes,
+        // MaxLevel/BaseLevel/SpellLevel, PowerType, ManaCost, MaxTargetLevel,
+        // ManaCostPct, the localised names beyond slot 0, and every other
+        // field the dst format skips. Ascension's realm has 2986 of 2988
+        // spell_template rows whose ids also exist in Spell.dbc (measured
+        // 2026-09-17: run/data-asc/dbc/Spell.dbc, 239,067 rows), so the
+        // DBC skeleton was being wiped for each of them on every boot.
+        //
+        // Concretely: spell_template row 800311 (Guardian's native starter,
+        // authored as a copy of the DBC row so all of its 15 fields match
+        // the DBC exactly) was destroying the DBC's EquippedItemClass=4 and
+        // EquippedItemSubclass=0x40, making coa::PlanStarter see no weapon
+        // requirement on the Guardian starter, so no shield was planned
+        // for OffHand and characters were created with an empty offhand
+        // slot (test/starter_equipment_test.py, issue #6).
+        //
+        // Fix: MERGE semantics. For an id already loaded from Spell.dbc,
+        // overlay exactly the 15 fields the generator authored on top of the
+        // DBC-owned SpellEntry, preserving everything else. For an id that
+        // Spell.dbc does not carry, keep the previous behaviour (InsertEntry
+        // of the sSpellTemplate record), which is what server-side spells
+        // rely on. SqlStorage's dst layout is SpellEntry-shaped for the 15
+        // authored fields, so reading them from `spellEntry` by member is a
+        // structure-typed read at the same struct member; writing them by
+        // member onto the DBC entry through const_cast is a bounded write
+        // into DBCStorage-owned memory (allocated by AutoProduceData, freed
+        // by DBCStorage::Clear at process exit). No new allocation, no
+        // pointer aliasing between the two storages, no whole-struct copy
+        // that would trample fields the coordinator intends to leave DBC-
+        // owned. The list is the same one enumerated in
+        // tools/make-ca-spell-template.py:
+        //   Attributes, AttributesEx, AttributesExB, AttributesExC,
+        //   ProcTypeMask, ProcChance, DurationIndex,
+        //   Effect[0], ImplicitTargetA[0], ImplicitTargetB[0],
+        //   EffectRadiusIndex[0], EffectAura[0],
+        //   EffectMiscValue[0], EffectMiscValueB[0], EffectTriggerSpell[0].
+        //
+        // The id column is the lookup key, not a mutation target: `i` is
+        // already the sSpellTemplate id and would equal the DBC entry's ID.
+        if (SpellEntry const* dbcEntryConst = sSpellStore.LookupEntry(i))
+        {
+            SpellEntry* dbcEntry = const_cast<SpellEntry*>(dbcEntryConst);
+            dbcEntry->Attributes             = spellEntry->Attributes;
+            dbcEntry->AttributesEx           = spellEntry->AttributesEx;
+            dbcEntry->AttributesExB          = spellEntry->AttributesExB;
+            dbcEntry->AttributesExC          = spellEntry->AttributesExC;
+            dbcEntry->ProcTypeMask           = spellEntry->ProcTypeMask;
+            dbcEntry->ProcChance             = spellEntry->ProcChance;
+            dbcEntry->DurationIndex          = spellEntry->DurationIndex;
+            dbcEntry->Effect[0]              = spellEntry->Effect[0];
+            dbcEntry->ImplicitTargetA[0]     = spellEntry->ImplicitTargetA[0];
+            dbcEntry->ImplicitTargetB[0]     = spellEntry->ImplicitTargetB[0];
+            dbcEntry->EffectRadiusIndex[0]   = spellEntry->EffectRadiusIndex[0];
+            dbcEntry->EffectAura[0]          = spellEntry->EffectAura[0];
+            dbcEntry->EffectMiscValue[0]     = spellEntry->EffectMiscValue[0];
+            dbcEntry->EffectMiscValueB[0]    = spellEntry->EffectMiscValueB[0];
+            dbcEntry->EffectTriggerSpell[0]  = spellEntry->EffectTriggerSpell[0];
+            ++mergedDbcSpells;
+            continue;
+        }
+
         // insert serverside spell data
         if (sSpellStore.GetNumRows() <= i)
         {
             sLog.outErrorDb("Loading Spell Template for spell %u, index out of bounds (max = %u)", i, sSpellStore.GetNumRows());
             continue;
         }
-        else
-        {
-            sSpellStore.InsertEntry(const_cast<SpellEntry*>(spellEntry), i);
-        }
+
+        sSpellStore.InsertEntry(const_cast<SpellEntry*>(spellEntry), i);
+        ++insertedServerSpells;
     }
+    sLog.outString(">> Merged %u spell_template row(s) onto Spell.dbc entries; inserted %u server-side spell(s)",
+                   mergedDbcSpells, insertedServerSpells);
 }
 
 /**
