@@ -1032,6 +1032,12 @@ TEST(CoaCombat_lua_port_sun_granters_amounts_and_gavel_guard)
     // class_resources.lua Sun Cleric granters: 804097 +2 (Vow periodic
     // cover), Flash 500144 +1, Spears of Light 800232 +2, Gavel 800611 +1
     // only while Sunwalker's Grace 680313 is on the player.
+    //
+    // [C] Optional generator gates are gain-only: the parent cast still
+    // resolves natively when the gate fails (character-foundations 24.2
+    // follow-up / issue #5, matching plans/character-foundations.md).
+    // Only wrong-class attempts remain hard Unauthorized -- that generator
+    // is not the actor's resource at all.
     Fixture f(27);
     f.Approve(804097, {500149});
     f.Approve(500144, {500149});
@@ -1044,7 +1050,12 @@ TEST(CoaCombat_lua_port_sun_granters_amounts_and_gavel_guard)
     f.Apply(f.Input(EventKind::Cast, 800232));
     CHECK_EQ(f.Value(500149), 5);
     CHECK_EQ(f.Value(802938), 1);
-    CHECK(Evaluate(f.context, f.state, f.Input(EventKind::Cast, 800611)).Result() == Status::Unauthorized);
+    // Gavel without Sunwalker's Grace: cast is Ready, resource stays at 5.
+    auto gavelUngated = Evaluate(f.context, f.state, f.Input(EventKind::Cast, 800611));
+    CHECK(gavelUngated.Result() == Status::Ready);
+    CHECK_EQ(gavelUngated.Deltas().size, 0u);
+    CHECK_EQ(Count(gavelUngated.Preview(), 500149, f.context.actor), 5);
+    CHECK(Commit(f.context, gavelUngated, true, f.state) == Status::Ready);
     CHECK_EQ(f.Value(500149), 5);
     f.selfAuras.insert(680313);
     f.Apply(f.Input(EventKind::Cast, 800611));
@@ -1053,7 +1064,7 @@ TEST(CoaCombat_lua_port_sun_granters_amounts_and_gavel_guard)
     f.Approve(502358, {500149});
     f.Apply(f.Input(EventKind::Cast, 502358));
     CHECK_EQ(f.Value(500149), 7);
-    // Wrong class is refused, not granted.
+    // Wrong class is refused, not granted -- this is not an optional gate.
     f.context.playerClass = 16;
     CHECK(Evaluate(f.context, f.state, f.Input(EventKind::Cast, 500144)).Result() == Status::Unauthorized);
 }
@@ -1076,16 +1087,35 @@ TEST(CoaCombat_lua_port_shock_needs_storm_talent_and_thirst_needs_thirst)
     // Stormbringer Shock 804020 "Generates 20 Static" only when 500040 is
     // known; Bloodmage Bloodmoon Blast 500125 "+1 Thirst" only when 500107
     // is known or applied.
+    //
+    // [C] The gate is gain-only. Without 500040 the level-1 Shock still
+    // resolves its native school damage (evidence: live gate
+    // test/starter_equipment_test.py --pair 1,16 got SMSG_CAST_FAILED 107
+    // because Evaluate returned Unauthorized on the empty-effects Cast that
+    // SpellEffectCoa emits for generators, refusing the whole cast).
+    // See plans/character-foundations.md 24.2 follow-up, issue #5.
     Fixture f(16);
     f.Approve(804020, {803102});
-    CHECK(Evaluate(f.context, f.state, f.Input(EventKind::Cast, 804020)).Result() == Status::Unauthorized);
+    // Gate absent: Ready, no resource change, no aura delta -- SpellEffectCoa
+    // proceeds to fire the native damage slot in the parent Spell::cast path.
+    auto shockUngated = Evaluate(f.context, f.state, f.Input(EventKind::Cast, 804020));
+    CHECK(shockUngated.Result() == Status::Ready);
+    CHECK_EQ(shockUngated.Deltas().size, 0u);
+    CHECK_EQ(shockUngated.Casts().size, 0u);
+    CHECK_EQ(Count(shockUngated.Preview(), 803102, f.context.actor), 0);
+    CHECK(Commit(f.context, shockUngated, true, f.state) == Status::Ready);
     CHECK_EQ(f.Value(803102), 0);
     f.known.insert(500040);
     f.Apply(f.Input(EventKind::Cast, 804020));
     CHECK_EQ(f.Value(803102), 20);
     Fixture b(20);
     b.Approve(500125, {706613});
-    CHECK(Evaluate(b.context, b.state, b.Input(EventKind::Cast, 500125)).Result() == Status::Unauthorized);
+    // Bloodmoon Blast without Thirst known-or-applied: Ready, no gain.
+    auto blastUngated = Evaluate(b.context, b.state, b.Input(EventKind::Cast, 500125));
+    CHECK(blastUngated.Result() == Status::Ready);
+    CHECK_EQ(blastUngated.Deltas().size, 0u);
+    CHECK(Commit(b.context, blastUngated, true, b.state) == Status::Ready);
+    CHECK_EQ(b.Value(706613), 0);
     b.known.insert(500107);
     b.Apply(b.Input(EventKind::Cast, 500125));
     CHECK_EQ(b.Value(706613), 1);
@@ -1094,6 +1124,13 @@ TEST(CoaCombat_lua_port_shock_needs_storm_talent_and_thirst_needs_thirst)
     c.selfAuras.insert(500107);
     c.Apply(c.Input(EventKind::Cast, 500125));
     CHECK_EQ(c.Value(706613), 1);
+    // Wrong class remains a hard refusal for either optional-gate spell.
+    Fixture w(16);
+    w.Approve(500125, {706613});
+    CHECK(Evaluate(w.context, w.state, w.Input(EventKind::Cast, 500125)).Result() == Status::Unauthorized);
+    Fixture v(20);
+    v.Approve(804020, {803102});
+    CHECK(Evaluate(v.context, v.state, v.Input(EventKind::Cast, 804020)).Result() == Status::Unauthorized);
 }
 
 TEST(CoaCombat_lua_port_flare_knight_ranger_cultist_reaper_amounts)

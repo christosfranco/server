@@ -749,6 +749,14 @@ namespace coa::combat
                     // Same numbers the Lua asserted, including the Dawn block
                     // (Delta refuses 500149 gains while 807440 is up) and the
                     // Heat soft cap (whole-hundreds convert to Embers).
+                    //
+                    // The gate is optional: it decides whether the tooltip
+                    // resource is granted, NOT whether the parent spell may
+                    // cast. A failed gate silently drops the +N gain and
+                    // lets the native slots (damage/etc.) resolve normally,
+                    // exactly as an ungated generator does after its Delta.
+                    // Class mismatch is a hard refusal: that generator is
+                    // not this actor's resource at all.
                     auto const* g = FindGenerator(e.spell);
                     if (g->playerClass != c.playerClass) { throw Status::Unauthorized; }
                     if (e.effects.size || e.target != c.actor) { throw Status::Invalid; }
@@ -762,8 +770,7 @@ namespace coa::combat
                             gated = Known(c, g->gateSpell) || SelfAura(c, g->gateSpell);
                             break;
                     }
-                    if (!gated) { throw Status::Unauthorized; }
-                    Delta(c, s, e.spell, g->resource, c.actor, g->amount, false);
+                    if (gated) { Delta(c, s, e.spell, g->resource, c.actor, g->amount, false); }
                 }
                 else if (e.kind == EventKind::Cast || e.kind == EventKind::CapModifier)
                 {
