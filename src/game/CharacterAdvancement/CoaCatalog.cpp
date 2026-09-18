@@ -348,14 +348,31 @@ namespace coa
             desired[m_specs.at(specId).marker] = desired[m_specs.at(specId).root] = 1;
         }
         Require(SelectedSpec(desired) == specId, "CoA specialization mismatch");
-        // [C] 2026-09-17 (PLAN 24.5): essence is not a restriction on this
-        // realm. Costs and budgets remain in the catalog for reference/display
-        // (the per-level {ae, te} row still ships to the companion and the
-        // counters), but the whole-set refusal that historically rejected a
-        // valid graph for exceeding AE/TE is gone. Ownership, ranks,
-        // prerequisites, traversal and ordinary point budgets are unchanged.
-        // See `plans/character-foundations.md` 24.5.
-        (void) m_budgets.at({playerClass, level});
+        // [C] 2026-09-18 (PLAN 24.7 supersedes 24.5): the per-class per-level
+        // {ae, te} row is the authoritative class-tree and spec-tree
+        // talent-point budget, and each entry's `ae` / `te` is its cost. Sum
+        // the desired build (marker + auto-added root are already in `desired`
+        // above; the free-cost spec traversal added below is by construction
+        // zero-cost and does not affect the sum) and refuse the whole set
+        // when either aggregate exceeds its budget. Server-authoritative, so
+        // a crafted or modified client cannot bypass the budget. The refusal
+        // blames the whole set structurally (offender stays {0,0}, matching
+        // CoaState.cpp:130-137's "budget and wire-shape refusals legitimately
+        // stay 0"). Traversal string is verbatim `CoA point budget exceeded`;
+        // the retired `CoA essence budget exceeded` remains retired. All
+        // other ownership, prerequisite, traversal, tier-investment,
+        // exclusion, group, state/rate and packet-bound checks are unchanged.
+        // See `plans/character-foundations.md` 24.7.
+        auto const& budget = m_budgets.at({playerClass, level});
+        uint64_t desiredAe = 0, desiredTe = 0;
+        for (auto const& pair : desired)
+        {
+            auto const& e = m_entries.at(pair.first);
+            desiredAe += uint64_t(e.ae) * pair.second;
+            desiredTe += uint64_t(e.te) * pair.second;
+        }
+        Require(desiredAe <= budget[0] && desiredTe <= budget[1],
+            "CoA point budget exceeded");
         Ranks traversal = desired;
         for (auto const& pair : m_entries)
         {
