@@ -30,6 +30,27 @@ namespace
         catch (std::invalid_argument const&) { return true; }
         return false;
     }
+
+    // A refusal is more than a throw: the message the server writes is what
+    // the wire and the DLL both key on. `RejectedWith` asserts the throw is
+    // there AND its .what() is the exact string the specification names.
+    // Introduced for PLAN character-foundations 24.7 (owner correction,
+    // ascender commit 8031c64): the retired `CoA essence budget exceeded`
+    // string must not appear where the specification names
+    // `CoA point budget exceeded`, and both facts have to be observed to
+    // prove the refusal is the new authoritative one.
+    bool RejectedWith(std::function<void()> const& action, std::string const& expected)
+    {
+        try { action(); }
+        catch (std::invalid_argument const& e) { return expected == e.what(); }
+        return false;
+    }
+    std::string RejectedMessage(std::function<void()> const& action)
+    {
+        try { action(); }
+        catch (std::invalid_argument const& e) { return e.what(); }
+        return "<no throw>";
+    }
     std::string Fixture(std::string const& extra = "")
     {
         std::ostringstream s;
@@ -155,6 +176,35 @@ TEST(Coa_wrong_class_branch_multiple_markers_rank_budget_and_cycles)
     //         fires. The four preceding legs of this TEST (wrong class,
     //         branch/marker/rank/cycle refusals) still fire on their own
     //         reasons and are unchanged.
+    //
+    // [C] 2026-09-18 (plans/character-foundations.md 24.7; ascender commit
+    // 8031c64). Owner correction supersedes the 24.5 rewrite above.
+    //   Old (24.5 shape, above): Authorize(12, 10, 1, {{106, 1}}) returned
+    //         a Build with {100, 101, 105, 106} at rank 1 -- essence did
+    //         not participate in authorization at all.
+    //   New (24.7): the catalog's per-class per-level ae/te and each
+    //         entry's ae_cost/te_cost are the authoritative class-tree /
+    //         spec-tree talent-point budgets, and the first unaffordable
+    //         pick is refused server-side over the complete desired build.
+    //         At level 10 the spec-1 package (marker 100 + auto-added
+    //         root 101, ae 1) exactly fills the class-tree budget (ae 1);
+    //         the requested 106 (ae 1) puts the desired build one class
+    //         point over budget. Authorize must throw invalid_argument
+    //         with the EXACT what() = "CoA point budget exceeded" and
+    //         must not throw the retired "CoA essence budget exceeded"
+    //         (asserted in Coa_point_budget_authoritative_class_spec
+    //         below via RejectedWith's what() equality; the same expected
+    //         string is enforced here).
+    //   Why:  owner correction 2026-09-18 (PLAN character-foundations
+    //         24.7, ascender commit 8031c64). The user report is a
+    //         level-10 Barbarian with both counters at zero yet further
+    //         picks accepted server-side. The generic evaluator's
+    //         `points` / `required_class_points` fields are zero for
+    //         every entry, so the catalog's ae/te values are the only
+    //         authoritative talent-point budgets. The four preceding
+    //         legs of this TEST (wrong class, branch/marker/rank/cycle
+    //         refusals) still fire on their own reasons and remain
+    //         unchanged.
     auto c = Catalog();
     CHECK(Rejected([&] { c->Authorize(13, 60, 1, {}); }));
     for (coa::Ranks r : {coa::Ranks{{104, 1}}, {{107, 1}}, {{102, 1}}, {{106, 0}}, {{106, 3}}, {{108, 1}, {109, 1}}})
@@ -162,13 +212,14 @@ TEST(Coa_wrong_class_branch_multiple_markers_rank_budget_and_cycles)
         CHECK(Rejected([&] { c->Authorize(12, 60, 1, r); }));
     }
     CHECK(Rejected([&] { c->SelectedSpec({{100, 1}, {102, 1}}); }));
-    // Formerly essence-refused build -- now authorizes on graph terms alone.
-    // Costs stay in the catalog (2 AE vs budget 1) as reference data only.
-    auto formerlyEssenceBudget = c->Authorize(12, 10, 1, {{106, 1}});
-    CHECK(formerlyEssenceBudget.entries.count(100) &&
-        formerlyEssenceBudget.entries.count(101) &&
-        formerlyEssenceBudget.entries.count(105) &&
-        formerlyEssenceBudget.entries.at(106) == 1);
+    // 24.7: the whole-set point-budget refusal is authoritative. Level
+    // 10 fits ae 1 / te 0 exactly for marker+root; adding 106 (ae 1)
+    // puts the build one class-tree point over.
+    CHECK(RejectedWith([&] { c->Authorize(12, 10, 1, {{106, 1}}); },
+        "CoA point budget exceeded"));
+    // And the retired essence string must not be what the server threw.
+    CHECK(RejectedMessage([&] { c->Authorize(12, 10, 1, {{106, 1}}); })
+        != "CoA essence budget exceeded");
 }
 
 TEST(Coa_free_trait_closure_prerequisite_investment_and_shared_root)
@@ -391,26 +442,45 @@ TEST(Coa_refusal_names_offending_entry_and_budget_names_none)
     //         raised "CoA essence budget exceeded" as a whole-set refusal
     //         with no offender, so refusal.entry/rank stayed 0 and Replace
     //         mapped it to Rejected.
-    //   New:  essence does not participate in authorization. The same
-    //         build satisfies ownership, ranks, prerequisites, traversal
-    //         (through the auto-added free trait 105) and the ordinary
-    //         point budget, so Replace applies it and commits: the store
-    //         records the commit and current.entries carries {100, 101,
-    //         105, 106}. The old error string is no longer written by
-    //         the server anywhere in this run.
-    //   Why:  deliberate specification change (24.5). Essence budgets
-    //         still exist in the catalog and still ship to the companion
-    //         as reference/display data (GetRemainingAE/TE and the
-    //         counters), but the whole-set refusal is gone. The
-    //         "budget_names_none" property this test's name captured is
-    //         now vacuous for essence in particular; the "names_none"
-    //         behaviour is still true for other whole-set refusals
-    //         (wire malformation, oversize builds) and this rewrite
-    //         does not weaken those.
+    //   New (24.5): essence does not participate in authorization. The
+    //         same build satisfies ownership, ranks, prerequisites,
+    //         traversal (through the auto-added free trait 105) and the
+    //         ordinary point budget, so Replace applies it and commits.
+    //   Why (24.5): deliberate specification change; essence budgets stay
+    //         in the catalog only as reference/display data.
+    //
+    // [C] 2026-09-18 (plans/character-foundations.md 24.7; ascender commit
+    // 8031c64). Owner correction supersedes the 24.5 rewrite of this
+    // block.
+    //   Old (24.5 shape, immediately above): the same
+    //         Replace(12, 10, {{100, 1}, {106, 1}}) call returned
+    //         ApplyStatus::Applied, the store committed once, error
+    //         stayed empty, and current.entries carried
+    //         {100, 101, 105, 106}.
+    //   New (24.7): the catalog's per-class per-level ae/te and each
+    //         entry's ae_cost/te_cost are the authoritative talent-point
+    //         budgets. At level 10 marker+root exactly fills ae 1 / te 0;
+    //         adding 106 (ae 1) is one class-tree point over budget so
+    //         Authorize throws "CoA point budget exceeded", Replace maps
+    //         that to ApplyStatus::Rejected, error carries the exact
+    //         string, and the store commits zero times. The whole-set-
+    //         budget refusal is authoritative again; the retired string
+    //         "CoA essence budget exceeded" must not be written anywhere.
+    //         The "budget_names_none" property this test's name captures
+    //         holds again: a whole-set budget refusal has no
+    //         single-entry offender, so refusal.entry / refusal.rank
+    //         stay 0 (the throw comes off the aggregate cost check, not
+    //         off any single blame() call in the per-entry loop above).
+    //   Why:  owner correction 2026-09-18, PLAN character-foundations
+    //         24.7, ascender commit 8031c64. Server source audit shows
+    //         no other aggregate authority (generic `points` /
+    //         `required_class_points` are zero for every entry), so the
+    //         catalog's ae/te values are the authoritative class-tree /
+    //         spec-tree talent-point budgets.
     //
     // The three preserved blocks (not-owned/107, not-traversable/110,
     // protected-metadata) are unchanged: this rewrite only replaces the
-    // essence-budget leg, not the surrounding structural refusals.
+    // budget leg, not the surrounding structural refusals.
     auto c = Catalog();
     coa::Build installed;
     std::string error;
@@ -439,22 +509,24 @@ TEST(Coa_refusal_names_offending_entry_and_budget_names_none)
         CHECK_EQ(refusal.rank, 1u);
     }
 
-    // Formerly essence-refused: at level 10 the package + 106 totalled
-    // 2 AE vs budget 1. Now applies on graph terms alone; no error is
-    // written; the store commits and current.entries carries the
-    // requested picks together with the auto-added root and free trait.
+    // 24.7 point-budget refusal (was 24.5 Applied, was 23.17(c)
+    // essence-budget Rejected). At level 10 the package + 106 totals
+    // ae 2 vs budget ae 1 -- one class-tree point over. Replace maps
+    // Authorize's throw to Rejected, error carries "CoA point budget
+    // exceeded" (never the retired essence string), the store commits
+    // zero times, and current.entries stays empty because nothing was
+    // loaded on this fresh guid.
     {
         FakeStore store;
         coa::State current; current.guid = 7;
         coa::AuthorizationError refusal;
         error.clear();
         CHECK(coa::Replace(*c, store, current, 12, 10, {{100, 1}, {106, 1}}, 100,
-            installed, error, coa::MutationSource::Request, &refusal) == coa::ApplyStatus::Applied);
-        CHECK_EQ(store.commits, 1u);
-        CHECK(error.empty());
-        coa::Ranks got;
-        for (auto const& e : current.entries) { got.emplace(e.entryId, e.rank); }
-        CHECK((got == coa::Ranks{{100, 1}, {101, 1}, {105, 1}, {106, 1}}));
+            installed, error, coa::MutationSource::Request, &refusal) == coa::ApplyStatus::Rejected);
+        CHECK_STR(error, std::string("CoA point budget exceeded"));
+        CHECK(error != std::string("CoA essence budget exceeded"));
+        CHECK_EQ(store.commits, 0u);
+        CHECK(current.entries.empty());
     }
 
     // Protected metadata: the tampered entry is the offender.
@@ -760,5 +832,154 @@ TEST(Coa_taking_vows_unlocks_the_seven_vow_buffs)
     for (uint32_t vow : {803489u, 803491u, 803494u, 803719u, 807435u, 807547u, 807749u})
     {
         CHECK(vowed.spells.count(vow));
+    }
+}
+
+TEST(Coa_point_budget_authoritative_class_spec)
+{
+    // PLAN character-foundations 24.7 -- class/spec talent-point budgets
+    // are authoritative (owner correction, 2026-09-18, ascender commit
+    // 8031c64).
+    //
+    // The wire gate against a live realm is
+    // ascender-server/test/talent_point_budget_test.py (class 12
+    // Barbarian, spec 1 Tactics, class pick 34291 / spell 705169, spec
+    // pick 30163 / spell 804138, L10 budget 1/0, L12 budget 2/1).
+    //
+    // This core test uses an extended Fixture that mirrors that wire
+    // shape exactly by adding a spec-owned TE entry (id 121) with no
+    // prerequisites, so a single-pick L10 spec-tree overflow reaches
+    // the point-budget check rather than the base fixture's
+    // 111-requires-106-rank-2 traversal refusal. Everything else --
+    // marker 100, root 101, class pick 106 -- comes from the base
+    // Fixture.
+    //
+    //   marker    100       ae 0 / te 0, owners {1}
+    //   root      101       ae 1 / te 0, owners {1}  (auto-added by
+    //                       Authorize once specId is nonzero)
+    //   free 105  ae 0 / te 0, owners {1}, connects to root 101
+    //   class pk  106       ae 1 / te 0, owners {1}, connects to 105,
+    //                       maxRank 2   -- mirrors ascender 34291
+    //   spec pk   121       ae 0 / te 1, owners {1}, no requires
+    //                       -- mirrors ascender 30163 (spec pick
+    //                       whose only prerequisites are the
+    //                       marker/root the spec auto-adds)
+    //   budgets   L10 -> ae 1 / te 0   (exactly marker+root)
+    //             L12 -> ae 2 / te 1   (exactly marker+root+106+121)
+    //
+    // Assertions here name exactly the properties the plan's *Check:*
+    // line requires: the marker-only save at L10 is the legal control;
+    // adding EITHER one reachable class pick OR one spec pick must be
+    // refused with the exact string "CoA point budget exceeded" and
+    // must NOT be refused with the retired "CoA essence budget
+    // exceeded"; the L12 marker+class+spec exactly fits and authorizes;
+    // ownership and traversal refusals remain unchanged. If any of
+    // these facts moves, this test fails and the reason names which
+    // fact moved.
+    auto c = Catalog(
+        "ENTRY\t121\t12\t1\t0\t10\t0\t1\t1\t0\t0\t0\t0\t0\t0\t0\t0\n"
+        "SPELL\t121\t1\t99121\t1\t10\n"
+        "OWNER\t121\t1\n");
+
+    // 1. Marker-only at L10 is the legal control: authorizes and the
+    // build is exactly {marker, root, free trait}.
+    auto markerOnly = c->Authorize(12, 10, 1, {});
+    CHECK(markerOnly.entries.count(100));
+    CHECK(markerOnly.entries.count(101));
+    CHECK(markerOnly.entries.count(105));
+    CHECK(!markerOnly.entries.count(106));
+    CHECK(!markerOnly.entries.count(121));
+
+    // 2. L10 + one class pick (one AE over) must refuse with the exact
+    // 24.7 traversal string. The retired 24.5 acceptance (returned a
+    // valid Build) must be gone; the retired 23.17(c) essence string
+    // must be gone too.
+    CHECK(RejectedWith([&] { c->Authorize(12, 10, 1, {{106, 1}}); },
+        "CoA point budget exceeded"));
+    CHECK(RejectedMessage([&] { c->Authorize(12, 10, 1, {{106, 1}}); })
+        != "CoA essence budget exceeded");
+
+    // 3. L10 + one spec pick (one TE over) must refuse the same way.
+    // 121 costs 0 AE / 1 TE; L10 budget is te 0 so this is one
+    // spec-tree point over.
+    CHECK(RejectedWith([&] { c->Authorize(12, 10, 1, {{121, 1}}); },
+        "CoA point budget exceeded"));
+    CHECK(RejectedMessage([&] { c->Authorize(12, 10, 1, {{121, 1}}); })
+        != "CoA essence budget exceeded");
+
+    // 4. L12 marker + class pick + spec pick exactly fits ae 2 / te 1
+    // and must authorize -- this proves the refusal at L10 is
+    // budget-specific rather than an unrelated ownership / traversal /
+    // prerequisite fault or a moved fixture. On pre-fix core this leg
+    // also passes today (the whole set is legal both under 24.5 and
+    // 24.7); it fails only if the fixture drifts.
+    auto fits = c->Authorize(12, 12, 1, {{106, 1}, {121, 1}});
+    CHECK(fits.entries.count(100));
+    CHECK(fits.entries.count(101));
+    CHECK(fits.entries.count(106) && fits.entries.at(106) == 1u);
+    CHECK(fits.entries.count(121) && fits.entries.at(121) == 1u);
+
+    // 5. Ownership refusal is unchanged: 107 is owned by spec 2, so
+    // requesting it under spec 1's marker still refuses "CoA entry not
+    // owned" -- not "CoA point budget exceeded". The 24.7 change does
+    // not loosen unrelated checks. Level 60 keeps the whole-set point
+    // budget well above the cost so this leg reaches the ownership
+    // check rather than the budget one.
+    CHECK(RejectedWith([&] { c->Authorize(12, 60, 1, {{107, 1}}); },
+        "CoA entry not owned"));
+
+    // 6. Replace maps the point-budget throw to Rejected, propagates
+    // the exact string as `error`, and does not commit. This is the
+    // wire path a live client sees on 0x72C: result NOT_TRAVERSIBLE,
+    // traversal "CoA point budget exceeded", store untouched.
+    {
+        FakeStore store;
+        coa::State current; current.guid = 42;
+        coa::Build installed;
+        coa::AuthorizationError refusal;
+        std::string error;
+        CHECK(coa::Replace(*c, store, current, 12, 10, {{100, 1}, {106, 1}}, 100,
+            installed, error, coa::MutationSource::Request, &refusal)
+            == coa::ApplyStatus::Rejected);
+        CHECK_STR(error, std::string("CoA point budget exceeded"));
+        CHECK(error != std::string("CoA essence budget exceeded"));
+        CHECK_EQ(store.commits, 0u);
+        CHECK(current.entries.empty());
+    }
+
+    // 7. And the opposite corner (spec-tree overflow) on the wire path.
+    {
+        FakeStore store;
+        coa::State current; current.guid = 43;
+        coa::Build installed;
+        coa::AuthorizationError refusal;
+        std::string error;
+        CHECK(coa::Replace(*c, store, current, 12, 10, {{100, 1}, {121, 1}}, 100,
+            installed, error, coa::MutationSource::Request, &refusal)
+            == coa::ApplyStatus::Rejected);
+        CHECK_STR(error, std::string("CoA point budget exceeded"));
+        CHECK_EQ(store.commits, 0u);
+    }
+
+    // 8. The L12 marker + class + spec save on the wire path applies
+    // and commits, and current.entries holds every requested pick.
+    // This is the exact positive control the ascender wire gate
+    // (test/talent_point_budget_test.py, phase 6) reads back from the
+    // characters DB.
+    {
+        FakeStore store;
+        coa::State current; current.guid = 44;
+        coa::Build installed;
+        coa::AuthorizationError refusal;
+        std::string error;
+        CHECK(coa::Replace(*c, store, current, 12, 12, {{100, 1}, {106, 1}, {121, 1}}, 100,
+            installed, error, coa::MutationSource::Request, &refusal)
+            == coa::ApplyStatus::Applied);
+        CHECK(error.empty());
+        CHECK_EQ(store.commits, 1u);
+        coa::Ranks got;
+        for (auto const& e : current.entries) { got.emplace(e.entryId, e.rank); }
+        CHECK(got.count(100) && got.count(101) && got.at(106) == 1u
+            && got.at(121) == 1u);
     }
 }
