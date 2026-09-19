@@ -1086,6 +1086,25 @@ bool WorldSession::AcceptCoaRequest()
     return true;
 }
 
+bool WorldSession::AcceptCoaTrainerRequest()
+{
+    // Same state gate as AcceptCoaRequest, without consuming the 500ms
+    // CoaRequestGate slot. Trainer buys (CMSG_TRAINER_BUY_SPELL) are the
+    // client's own paced UI operation, not the 21KB 0x727 analytic frame the
+    // rate limiter exists for. Sharing the slot silently dropped every buy
+    // that arrived within 500ms of a successful one (plans/spell-progression.md
+    // 26.2: after each SUCCEEDED the very next CMSG at ~100ms was denied and
+    // answered with a 0x72C `rate` packet, not a trainer packet; the client
+    // saw neither SUCCEEDED nor BUY_FAILED and every alternate buy vanished).
+    if (GetClientProfile() != proto::ConnectionProfile::AscensionStockAuthCoA || !GetPlayer() ||
+        PlayerLoading() || isLogingOut() || !GetPlayer()->IsCoaManaged())
+    {
+        return false;
+    }
+    auto player = GetPlayer();
+    return player->IsInWorld() && player->IsAlive() && !player->IsInCombat() && !player->IsBeingTeleported();
+}
+
 bool Player::IsCoaTrainer(Creature const* creature)
 {
     return creature && creature->GetCreatureInfo() &&
@@ -1160,11 +1179,32 @@ bool Player::TrainCoaOrdinarySpell(uint32 spellId)
     }
     RememberCoaIndependentSpell(spellId);
     learnSpell(spellId, false);
-    if (m_coaFailed || !HasSpell(spellId))
+    // learnSpell/addSpell can refuse for two very different reasons:
+    //  * the spell row is broken (SpellMgr::IsSpellValid false, e.g. class 13
+    //    spell 807070 Brew Cocktail seen live 2026-09-19 13:43:54 as
+    //    `ERROR:Player::addSpell: Broken spell #807070 learning not allowed.`).
+    //    That is DBC data, not character corruption; SetSkill and the
+    //    RememberCoaIndependentSpell above are transaction-clean rollbacks
+    //    and the buy is simply refused. The handler answers
+    //    SMSG_TRAINER_BUY_FAILED, exactly as for the non-CoA money check,
+    //    and the session continues.
+    //  * learnSpell itself set m_coaFailed (RefreshCoaPowerRequirements threw,
+    //    or a projection-managed spell escaped the closure). That IS CoA
+    //    state corruption -- the same signal that the projection code raises
+    //    on the ReconcileCoaSpells failure path -- and it costs the session
+    //    a kick to preserve durable-state invariants.
+    // Old code treated both cases the same and kicked (plans/spell-progression.md
+    // 26.2: fresh class-13 probe kicked mid-run with "connection closed with
+    // 1 bytes outstanding" after 807070's addSpell refusal).
+    if (m_coaFailed)
     {
         CharacterDatabase.RollbackTransaction();
-        m_coaFailed = true;
         GetSession()->KickPlayer();
+        return false;
+    }
+    if (!HasSpell(spellId))
+    {
+        CharacterDatabase.RollbackTransaction();
         return false;
     }
     _SaveSpells();

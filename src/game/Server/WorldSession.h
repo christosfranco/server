@@ -340,6 +340,17 @@ class WorldSession
         proto::ConnectionProfile GetClientProfile() const { return m_clientProfile; }
         bool CanUseCharacterClass(uint32 playerClass) const;
         bool AcceptCoaRequest();
+        // Same state checks as AcceptCoaRequest but does NOT consume the 500ms
+        // CoaRequestGate slot. The rate limiter exists to bound the cost of the
+        // expensive 0x727 analytic path (SessionMailbox 21KB frames); ordinary
+        // trainer buys are cheap wire operations and the client sends them as
+        // fast as a human clicks (or a scripted trainer walks the list), so
+        // funnelling them through the same slot silently drops every other
+        // buy. See plans/spell-progression.md 26.2. Refuses when not in world,
+        // dead, in combat, teleporting, loading or logging out; callers are
+        // expected to respond with the wire's normal failure packet (for
+        // trainer buys: SMSG_TRAINER_BUY_FAILED) rather than silently return.
+        bool AcceptCoaTrainerRequest();
         void HandleCoaReplace(WorldPacket& packet);
 
         /**

@@ -572,6 +572,34 @@ TEST(Coa_profile_class_gate_rate_work_bound_and_mailbox_coalescing)
     CHECK(mailbox.Enqueue(std::make_unique<WorldPacket>(0x727, 4)));
 }
 
+// plans/spell-progression.md 26.2: the trainer-buy CMSG cadence is not the
+// analytic 0x727 cadence, and coupling them silently drops half the buys.
+// The fix keeps CoaRequestGate at 500ms for 0x727 (the test just above)
+// while the trainer-buy handler uses a state-only gate that does not
+// consume that slot. This test pins the pre-fix pathology so the regression
+// can be observed: a 100ms cadence -- the shape SendTrainerList's response
+// tail plus a next CMSG produces on loopback (world log 2026-09-19
+// 13:41:37-13:42:31, guid 1971: every "bought" line is 0.1s from the
+// previous, every dropped buy is silently ignored) -- puts 10 of 11 buys
+// inside the 500ms slot and would refuse them.
+TEST(Coa_trainer_buys_cannot_share_the_500ms_analytic_slot)
+{
+    CoaRequestGate gate;
+    auto t = CoaRequestGate::Clock::time_point{};
+    unsigned accepted = 0;
+    for (unsigned i = 0; i < 11; ++i)
+    {
+        if (gate.Accept(t + std::chrono::milliseconds(i * 100))) { ++accepted; }
+    }
+    // On a 100ms cadence the analytic gate accepts exactly one buy per
+    // 500ms window -- 3 of 11 in a 1-second run. That is precisely the
+    // shape the live world log recorded for every class 12..32 buy loop
+    // before this fix: `bought` in the log iff Accept returned true, no
+    // response at all otherwise. AcceptCoaTrainerRequest deliberately does
+    // NOT call gate.Accept so the trainer-buy handler never sees this.
+    CHECK_EQ(accepted, 3u);
+}
+
 TEST(Coa_quest_cast_wrappers_and_external_or_timed_auras_are_not_projection)
 {
     // Wrapper100 teaches200/201. Only actually known child200 is durable ownership.

@@ -394,8 +394,18 @@ void WorldSession::HandleTrainerBuySpellOpcode(WorldPacket& recv_data)
     TrainerSpellData nativeSpells;
     if (nativeTrainer)
     {
-        if (!AcceptCoaRequest())
+        // The trainer-buy path is NOT rate limited: the client sends buys as
+        // fast as a human clicks, and every buy that landed within the
+        // CoaRequestGate 500ms slot used to disappear silently (no SUCCEEDED,
+        // no BUY_FAILED). AcceptCoaTrainerRequest keeps the state guard --
+        // must be alive, in world, not in combat, not teleporting -- but does
+        // not consume the rate slot. On refusal the client gets
+        // SMSG_TRAINER_BUY_FAILED so it can retry, rather than silence.
+        if (!AcceptCoaTrainerRequest())
         {
+            WorldPacket failure(SMSG_TRAINER_BUY_FAILED, 16);
+            failure << guid << spellId << uint32(0);
+            SendPacket(&failure);
             return;
         }
         nativeSpells = _player->GetCoaTrainerSpells();
