@@ -351,13 +351,28 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
         // non talent spell: learn low ranks (recursive call)
         else if (uint32 prev_spell = sSpellMgr.GetPrevSpellInChain(spell_id))
         {
+            // A CoA ordinary-training predecessor is an independently owned
+            // root, not a dependency of the new rank -- it was bought at its
+            // own trainer visit and lives in character_spell on its own row.
+            // Recursing with dependent=true would promote its stored entry
+            // (PlayerSpell.cpp "dependent spell known as not dependent,
+            // overwrite state" branch) and _SaveSpells' `!dependent` gate
+            // would then drop the row on the next save (26.2 witness class 14
+            // 800029 -> 803881 "Vengeful Pact"; class 32 801094 -> 803754
+            // "Runic Tattoos: Earth"). Pass dependent=false for that case,
+            // preserving the existing stock semantics for non-CoA chains.
+            bool prev_dependent = true;
+            if (IsCoaManaged() && IsCoaOrdinaryTrainingSpell(prev_spell))
+            {
+                prev_dependent = false;
+            }
             if (!IsInWorld() || disabled)                   // at spells loading, no output, but allow save
             {
-                addSpell(prev_spell, active, true, true, disabled);
+                addSpell(prev_spell, active, true, prev_dependent, disabled);
             }
             else                                            // at normal learning
             {
-                learnSpell(prev_spell, true);
+                learnSpell(prev_spell, prev_dependent);
             }
         }
 
@@ -395,11 +410,31 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
                                 GetSession()->SendPacket(&data);
                             }
 
-                            // mark old spell as disable (SMSG_SUPERCEDED_SPELL replace it in client by new)
-                            itr2->second.active = false;
-                            if (itr2->second.state != PLAYERSPELL_NEW)
+                            // For CoA ordinary-training predecessor roots the
+                            // lower rank stays a first-class owned spell: both
+                            // ranks persist in character_spell and both must
+                            // appear in SMSG_INITIAL_SPELLS on relog
+                            // (docs/coa-advancement.md "Ordinary Class
+                            // Training": ordinary spells persist in the
+                            // character spellbook independently). The client
+                            // has already been told which rank sits in the
+                            // action bar via SMSG_SUPERCEDED_SPELL above, so
+                            // it does not double-book; leaving `active` set
+                            // just keeps the predecessor visible on relog.
+                            // Stock supersede semantics for non-CoA chains
+                            // still deactivate the old rank -- 26.2 witnesses
+                            // class 14 800029 and class 32 801094.
+                            bool keepPredecessorActive = IsCoaManaged() &&
+                                m_coaIndependentRoots.count(itr2->first) &&
+                                IsCoaOrdinaryTrainingSpell(itr2->first);
+                            if (!keepPredecessorActive)
                             {
-                                itr2->second.state = PLAYERSPELL_CHANGED;
+                                // mark old spell as disable (SMSG_SUPERCEDED_SPELL replace it in client by new)
+                                itr2->second.active = false;
+                                if (itr2->second.state != PLAYERSPELL_NEW)
+                                {
+                                    itr2->second.state = PLAYERSPELL_CHANGED;
+                                }
                             }
                             superceded_old = true;          // new spell replace old in action bars and spell book.
                         }
@@ -605,8 +640,17 @@ bool Player::addSpell(uint32 spell_id, bool active, bool learning, bool dependen
 
     RefreshParryCapability(*this);
 
-    // return true (for send learn packet) only if spell active (in case ranked spells) and not replace old spell
-    return active && !disabled && !superceded_old;
+    // return true (for send learn packet) only if spell active (in case ranked spells) and not replace old spell.
+    // Exception: a CoA ordinary-training root that just superseded its lower
+    // rank is still a NEW buy the trainer path must announce -- the client
+    // (and 26.2's ordinary_training_l20_test.py) require SMSG_LEARNED_SPELL
+    // for the newly learned rank in addition to the SMSG_SUPERCEDED_SPELL
+    // that replaced the lower one in the action bar. Stock supersede
+    // semantics for non-CoA chains stay untouched.
+    bool coaOrdinaryLearn = superceded_old && IsCoaManaged() &&
+                            m_coaIndependentRoots.count(spell_id) &&
+                            IsCoaOrdinaryTrainingSpell(spell_id);
+    return active && !disabled && (!superceded_old || coaOrdinaryLearn);
 }
 
 /**

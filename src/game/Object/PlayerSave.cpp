@@ -1046,7 +1046,12 @@ void Player::_SaveSpells()
                 stmtDel.PExecute(GetGUIDLow(), itr->first);
             }
 
-            // add only changed/new not dependent spells
+            // add only changed/new not dependent spells. CoA ordinary-training
+            // roots stay non-dependent even after the recursive predecessor
+            // learn (PlayerSpell.cpp bought-rank prev branch does not flip
+            // their dependent bit for that reason -- 26.2 witness class 14
+            // 800029 and class 32 801094), so this original gate keeps them
+            // persisted without needing a per-row bypass here.
             if (!itr->second.dependent && (itr->second.state == PLAYERSPELL_NEW || itr->second.state == PLAYERSPELL_CHANGED))
             {
                 stmtIns.PExecute(GetGUIDLow(), itr->first, uint8(itr->second.active ? 1 : 0), uint8(itr->second.disabled ? 1 : 0));

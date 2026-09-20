@@ -1140,27 +1140,108 @@ bool Player::IsCoaOrdinaryTrainingSpell(uint32 spellId) const
     return false;
 }
 
+// 26.2 diagnostic: return-false paths in the ordinary-training buy path
+// (CanTrainCoaOrdinarySpell + TrainCoaOrdinarySpell) name the failing
+// predicate so a 0x1B4 refusal from a GREEN pre-buy trainer list can be
+// traced without recompiling. Instrumentation lives here rather than inside
+// IsCoaOrdinaryTrainingSpell so character-load / trainer-list refresh (which
+// iterates every ordinary training candidate against a specific player class)
+// does not flood the log with thousands of "not-in-training-set" lines per
+// login. The trainer-buy path is the only caller with a class+spell pair the
+// player is actually asking to purchase, so a refusal there is per-buy volume.
+namespace
+{
+    void LogOrdRefuse(uint32 spellId, uint32 klass, uint32 lvl, const char* predicate)
+    {
+        sLog.outDetail("CoA ord-train refuse: spell=%u class=%u lvl=%u predicate=%s",
+                       spellId, klass, lvl, predicate);
+    }
+}
+
 bool Player::CanTrainCoaOrdinarySpell(uint32 spellId) const
 {
     if (!IsCoaOrdinaryTrainingSpell(spellId))
     {
+        // Name which of the IsCoaOrdinaryTrainingSpell sub-predicates fired,
+        // so a refusal of a spell the pre-buy trainer list called GREEN is
+        // traceable (skill/class SLA class-skill mismatch, wrong SpellClassSet
+        // family, missing SpellEntry, etc.). Only reached once per buy.
+        if (!IsCoaManaged())
+        {
+            LogOrdRefuse(spellId, getClass(), getLevel(), "not-coa-managed");
+        }
+        else if (!sWorld.GetCoaTrainingSpells().count(spellId))
+        {
+            LogOrdRefuse(spellId, getClass(), getLevel(), "not-in-training-set");
+        }
+        else
+        {
+            auto spell = sSpellStore.LookupEntry(spellId);
+            auto playerClass = sChrClassesStore.LookupEntry(getClass());
+            if (!spell || !playerClass)
+            {
+                LogOrdRefuse(spellId, getClass(), getLevel(), "spellentry-or-chrclasses-missing");
+            }
+            else if (!coa::OrdinaryClassSpell(playerClass->SpellClassSet, spell->SpellClassSet, spell->SpellLevel))
+            {
+                sLog.outDetail("CoA ord-train refuse: spell=%u class=%u lvl=%u predicate=OrdinaryClassSpell(playerSet=%u,spellSet=%u,spellLevel=%u)",
+                               spellId, getClass(), getLevel(),
+                               playerClass->SpellClassSet, spell->SpellClassSet, spell->SpellLevel);
+            }
+            else
+            {
+                sLog.outDetail("CoA ord-train refuse: spell=%u class=%u lvl=%u predicate=no-class-SLA-fits (raceMask=0x%x classMask=0x%x)",
+                               spellId, getClass(), getLevel(),
+                               getRaceMask(), getClassMask());
+            }
+        }
         return false;
     }
     auto spell = sSpellStore.LookupEntry(spellId);
     uint32 required = spell->SpellLevel;
     if (!IsSpellFitByClassAndRace(spellId, &required))
     {
+        sLog.outDetail("CoA ord-train refuse: spell=%u class=%u lvl=%u predicate=IsSpellFitByClassAndRace-false (required=%u)",
+                       spellId, getClass(), getLevel(), required);
         return false;
     }
     required = std::max(required, spell->SpellLevel);
+    if (getLevel() < required)
+    {
+        sLog.outDetail("CoA ord-train refuse: spell=%u class=%u lvl=%u predicate=player-below-required-level (required=%u)",
+                       spellId, getClass(), getLevel(), required);
+        return false;
+    }
     TrainerSpell offer(spellId, 0, 0, 0, required, spellId, true);
-    return getLevel() >= required && GetTrainerSpellState(&offer, required) == TRAINER_SPELL_GREEN;
+    TrainerSpellState state = GetTrainerSpellState(&offer, required);
+    if (state != TRAINER_SPELL_GREEN)
+    {
+        sLog.outDetail("CoA ord-train refuse: spell=%u class=%u lvl=%u predicate=GetTrainerSpellState=%d (required=%u); TRAINER_SPELL_GREEN=%d",
+                       spellId, getClass(), getLevel(), (int)state, required, (int)TRAINER_SPELL_GREEN);
+        return false;
+    }
+    return true;
 }
 
 bool Player::TrainCoaOrdinarySpell(uint32 spellId)
 {
-    if (!m_coaReady || m_coaFailed || !CanTrainCoaOrdinarySpell(spellId) || !CharacterDatabase.BeginTransaction())
+    if (!m_coaReady)
     {
+        LogOrdRefuse(spellId, getClass(), getLevel(), "not-coa-ready");
+        return false;
+    }
+    if (m_coaFailed)
+    {
+        LogOrdRefuse(spellId, getClass(), getLevel(), "coa-state-failed");
+        return false;
+    }
+    if (!CanTrainCoaOrdinarySpell(spellId))
+    {
+        return false; // already named by CanTrainCoaOrdinarySpell
+    }
+    if (!CharacterDatabase.BeginTransaction())
+    {
+        LogOrdRefuse(spellId, getClass(), getLevel(), "BeginTransaction-failed");
         return false;
     }
     auto bounds = sSpellMgr.GetSkillLineAbilityMapBounds(spellId);
@@ -1198,12 +1279,16 @@ bool Player::TrainCoaOrdinarySpell(uint32 spellId)
     // 1 bytes outstanding" after 807070's addSpell refusal).
     if (m_coaFailed)
     {
+        sLog.outDetail("CoA ord-train refuse: spell=%u class=%u lvl=%u predicate=learnSpell-set-coa-failed (kicking)",
+                       spellId, getClass(), getLevel());
         CharacterDatabase.RollbackTransaction();
         GetSession()->KickPlayer();
         return false;
     }
     if (!HasSpell(spellId))
     {
+        sLog.outDetail("CoA ord-train refuse: spell=%u class=%u lvl=%u predicate=post-learn-HasSpell-false (broken SpellEntry or addSpell no-op)",
+                       spellId, getClass(), getLevel());
         CharacterDatabase.RollbackTransaction();
         return false;
     }
@@ -1211,6 +1296,8 @@ bool Player::TrainCoaOrdinarySpell(uint32 spellId)
     _SaveSkills();
     if (!CharacterDatabase.CommitTransactionChecked())
     {
+        sLog.outDetail("CoA ord-train refuse: spell=%u class=%u lvl=%u predicate=CommitTransactionChecked-failed (kicking)",
+                       spellId, getClass(), getLevel());
         m_coaFailed = true;
         GetSession()->KickPlayer();
         return false;
